@@ -1262,7 +1262,12 @@ if selectedDicom is not None:
                     calibSource = "unknown"
 
             origH, origW = pixelArray[slice_ix].shape[:2]
-            pxToMm = (origW / 512.0) * mmPerPixel if mmPerPixel else None
+            if mmPerPixelCalib:
+                # Catheter calibration: measured on 512-canvas → already mm/512px, no rescaling
+                pxToMm = mmPerPixelCalib
+            else:
+                # DICOM metadata: mm/original-pixel → scale to 512-space
+                pxToMm = (origW / 512.0) * mmPerPixel if mmPerPixel else None
 
             # Resolve phase from metadata HERE (needed before QCA branching)
             meta  = st.session_state.dicom_metadata.get(dicomLabel, {})
