@@ -89,17 +89,6 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# fil-finder requires astropy<6 but works fine with astropy>=6 at runtime.
-# Install with --no-deps to skip the incompatible version check.
-echo "📥 Installing fil-finder (skipping astropy version check)..."
-"$PIP" install fil-finder==1.7.2 --no-deps
-if [ $? -ne 0 ]; then
-    echo "❌ Failed to install fil-finder!"
-    echo "--------------------------------------------------------"
-    echo "⚠️  Press any key to close this window."
-    read -k 1 -s
-    exit 1
-fi
 
 # Run the app
 echo "🌐 Launching app in your browser..."

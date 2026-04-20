@@ -6,8 +6,8 @@ import scipy.ndimage
 import scipy.optimize
 import predict
 from PIL import Image
-from fil_finder import FilFinder2D
-import astropy.units as u
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 import pooch
 import utils.dataset
@@ -34,27 +34,65 @@ for item in colourTableHex.keys():
 
 
 def skeletonise(maskArray):
-    # if len(maskArray.shape) == 3:
+    """
+    Skeletonise a vessel mask and return the single longest path through the
+    skeleton (all branches pruned).  Replaces FilFinder2D / astropy dependency
+    with a pure skimage + BFS implementation.
+    """
     maskArray = cv2.cvtColor(maskArray, cv2.COLOR_BGR2GRAY)
 
+    # 1. Morphological skeleton
     skeleton = skimage.morphology.skeletonize(maskArray.astype('bool'))
 
-    # Process the skeleton and find the longest path
-    fil = FilFinder2D(skeleton.astype('uint8'),
-                    distance=250 * u.pc, mask=skeleton, beamwidth=10.0*u.pix)
-    fil.preprocess_image(flatten_percent=85)
-    fil.create_mask(border_masking=True, verbose=False,
-                    use_existing_mask=True)
-    fil.medskel(verbose=False)
-    fil.analyze_skeletons(branch_thresh=400 * u.pix,
-                        skel_thresh=10 * u.pix, prune_criteria='length')
+    # 2. Keep only the largest connected component (removes isolated fragments)
+    labeled = skimage.morphology.label(skeleton)
+    if labeled.max() > 1:
+        sizes = numpy.bincount(labeled.ravel())
+        sizes[0] = 0
+        skeleton = (labeled == numpy.argmax(sizes))
 
-    # add image arrays dictionary
-    # tifffile.imwrite(os.path.join(arteryFolder, "skel.tif"), fil.skeleton.astype('<u1')*255)
+    ys, xs = numpy.where(skeleton)
+    if len(ys) < 2:
+        return skeleton.astype('<u1') * 255
 
-    skel = fil.skeleton.astype('<u1')*255
+    h, w = skeleton.shape
 
-    return skel
+    # 3. BFS helper: returns (farthest_y, farthest_x, parent_dict)
+    def bfs(skel, start_y, start_x):
+        visited  = numpy.zeros_like(skel, dtype=bool)
+        parent   = {}
+        visited[start_y, start_x] = True
+        queue    = deque([(start_y, start_x)])
+        last     = (start_y, start_x)
+        while queue:
+            y, x = queue.popleft()
+            last = (y, x)
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dy == 0 and dx == 0:
+                        continue
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w and skel[ny, nx] and not visited[ny, nx]:
+                        visited[ny, nx] = True
+                        parent[(ny, nx)] = (y, x)
+                        queue.append((ny, nx))
+        return last, parent
+
+    # 4. Double BFS to find the two true endpoints of the main path
+    (y1, x1), _          = bfs(skeleton, ys[0], xs[0])
+    (y2, x2), parent_map = bfs(skeleton, y1, x1)
+
+    # 5. Trace back the path from y2,x2 to y1,x1
+    path_skel = numpy.zeros_like(skeleton, dtype=bool)
+    cy, cx = y2, x2
+    while (cy, cx) != (y1, x1):
+        path_skel[cy, cx] = True
+        if (cy, cx) not in parent_map:
+            break
+        cy, cx = parent_map[(cy, cx)]
+    path_skel[y1, x1] = True
+
+    return path_skel.astype('<u1') * 255
 
 
 def skelEndpoints(skel):

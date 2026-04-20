@@ -1,8 +1,5 @@
 # Requirements updated for Python 3.13 compatibility
 
-# Astronomy / skeletonisation (fil-finder installed separately via --no-deps)
-astropy>=6.1
-
 # Core scientific
 numpy>=2.0
 scipy>=1.13
