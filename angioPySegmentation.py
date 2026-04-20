@@ -1317,19 +1317,20 @@ if selectedDicom is not None:
             pctDiam = (1.0 - mldMm / refDiamMm) * 100.0 if refDiamMm > 0 else 0.0
             pctArea = (1.0 - (mldMm / refDiamMm) ** 2) * 100.0 if refDiamMm > 0 else 0.0
 
-            # arc length along centreline (spline points are in 512-scale px → convert)
-            spX    = splinePointsX[clippingLength:-clippingLength] * (origW / 512.0)
-            spY    = splinePointsY[clippingLength:-clippingLength] * (origH / 512.0)
+            # arc length along centreline — keep in 512-space, convert with pxToMm
+            # (same scale as vesselThicknesses, avoids double-scaling for 1024px DICOMs)
+            spX    = splinePointsX[clippingLength:-clippingLength]
+            spY    = splinePointsY[clippingLength:-clippingLength]
             diffs  = numpy.sqrt(numpy.diff(spX) ** 2 + numpy.diff(spY) ** 2)
-            cumLen = numpy.concatenate([[0], numpy.cumsum(diffs)])  # in original pixels
-            totalLenMm = cumLen[-1] * mmPerPixel if mmPerPixel else cumLen[-1]
+            cumLen = numpy.concatenate([[0], numpy.cumsum(diffs)])  # in 512-scale pixels
+            totalLenMm = cumLen[-1] * pxToMm if pxToMm else cumLen[-1]
 
             # stenosis length: segment where diameter < 50 % of reference
             vesselThicknessMm = vesselThicknesses * (pxToMm or 1.0)
             stenosisMask = vesselThicknessMm < (refDiamMm * 0.5)
             if numpy.any(stenosisMask):
                 idxs = numpy.where(stenosisMask)[0]
-                stenosisLenMm = (cumLen[min(idxs[-1], len(cumLen)-1)] - cumLen[idxs[0]]) * (mmPerPixel or 1.0)
+                stenosisLenMm = (cumLen[min(idxs[-1], len(cumLen)-1)] - cumLen[idxs[0]]) * (pxToMm or 1.0)
             else:
                 stenosisLenMm = 0.0
 
