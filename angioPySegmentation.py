@@ -1063,7 +1063,11 @@ if selectedDicom is not None:
                     v_mask_base = numpy.any(predictedMask > 0, axis=-1)
                 else:
                     v_mask_base = predictedMask > 0
-                
+
+                # Reset cumulative_xor if shape doesn't match current mask
+                if st.session_state.cumulative_xor.shape != v_mask_base.shape:
+                    st.session_state.cumulative_xor = numpy.zeros_like(v_mask_base, dtype=bool)
+
                 v_mask_final = v_mask_base ^ st.session_state.cumulative_xor
 
                 if len(predictedMask.shape) == 3:
