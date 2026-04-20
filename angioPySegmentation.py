@@ -681,7 +681,7 @@ if selectedDicom is not None:
             # ── Mode toggle ───────────────────────────────────────────────────
             canvasMode = st.radio(
                 "Canvas mode:",
-                ["📏 Calibrate catheter (6F = 1.98 mm)", "📍 Annotate artery"],
+                ["📏 Calibrate catheter", "📍 Annotate artery"],
                 horizontal=True,
                 key="canvasMode"
             )
@@ -689,6 +689,14 @@ if selectedDicom is not None:
             isCalibMode = canvasMode.startswith("📏")
 
             if isCalibMode:
+                CATHETER_SIZES = {"6F = 1.98 mm": 1.98, "5F = 1.67 mm": 1.67}
+                catheterChoice = st.selectbox(
+                    "Rozmiar cewnika:",
+                    list(CATHETER_SIZES.keys()),
+                    key="catheterSize"
+                )
+                catheterMm = CATHETER_SIZES[catheterChoice]
+
                 c_head1, c_head2 = st.columns([3, 1])
                 c_head1.caption("Zaznacz dwa punkty (początek i koniec) wzdłuż cewnika, aby wyznaczyć odcinek do kalibracji.")
                 if c_head2.button("🔄 Redo Calib"):
@@ -845,8 +853,10 @@ if selectedDicom is not None:
 
                         if detectedDiameters:
                             avgDiam = numpy.mean([p['diam'] for p in calibPoints])
-                            st.session_state["mmPerPixelCalib"] = 1.98 / avgDiam
-                            st.session_state["calibLinePx"]     = avgDiam
+                            st.session_state["mmPerPixelCalib"]  = catheterMm / avgDiam
+                            st.session_state["calibLinePx"]      = avgDiam
+                            st.session_state["calibCatheterMm"]  = catheterMm
+                            st.session_state["calibCatheterName"] = catheterChoice
                             
                             # Uruchomienie odświeżenia widoku lewego natychmiast po znalezieniu nowych ścian
                             if st.session_state.get("calibPoints") != calibPoints:
@@ -856,8 +866,10 @@ if selectedDicom is not None:
                 # Show calibration status
                 mmPerPixelCalib = st.session_state.get("mmPerPixelCalib", None)
                 if mmPerPixelCalib:
-                    linePx = st.session_state.get("calibLinePx", 0)
-                    st.success(f"✅ Calibration: {linePx:.1f} px = 1.98 mm → **{mmPerPixelCalib:.4f} mm/px**")
+                    linePx    = st.session_state.get("calibLinePx", 0)
+                    catName   = st.session_state.get("calibCatheterName", catheterChoice)
+                    catMmDisp = st.session_state.get("calibCatheterMm", catheterMm)
+                    st.success(f"✅ Calibration ({catName}): {linePx:.1f} px = {catMmDisp} mm → **{mmPerPixelCalib:.4f} mm/px**")
                 else:
                     try:
                         dicomMmPx = float(dcm.ImagerPixelSpacing[0]) * (float(dcm.DistanceSourceToPatient) / float(dcm.DistanceSourceToDetector))
@@ -893,8 +905,10 @@ if selectedDicom is not None:
                 # Show calibration status in annotation mode too
                 mmPerPixelCalib = st.session_state.get("mmPerPixelCalib", None)
                 if mmPerPixelCalib:
-                    linePx = st.session_state.get("calibLinePx", 0)
-                    st.success(f"✅ Calibration: {linePx:.1f} px = 1.98 mm → **{mmPerPixelCalib:.4f} mm/px**")
+                    linePx    = st.session_state.get("calibLinePx", 0)
+                    catName   = st.session_state.get("calibCatheterName", "catheter")
+                    catMmDisp = st.session_state.get("calibCatheterMm", 1.98)
+                    st.success(f"✅ Calibration ({catName}): {linePx:.1f} px = {catMmDisp} mm → **{mmPerPixelCalib:.4f} mm/px**")
                 else:
                     try:
                         dicomMmPx = float(dcm.ImagerPixelSpacing[0]) * (float(dcm.DistanceSourceToPatient) / float(dcm.DistanceSourceToDetector))
@@ -1234,7 +1248,7 @@ if selectedDicom is not None:
             mmPerPixelCalib = st.session_state.get("mmPerPixelCalib", None)
             if mmPerPixelCalib:
                 mmPerPixel  = mmPerPixelCalib
-                calibSource = "6F catheter"
+                calibSource = st.session_state.get("calibCatheterName", "catheter")
             else:
                 try:
                     mmPerPixel  = float(dcm.ImagerPixelSpacing[0]) * (float(dcm.DistanceSourceToPatient) / float(dcm.DistanceSourceToDetector))
@@ -1313,7 +1327,7 @@ if selectedDicom is not None:
             st.markdown("---")
             st.markdown("<h5 style='color:white;'>📐 QCA Metrics</h5>", unsafe_allow_html=True)
             if mmPerPixelCalib:
-                st.success(f"✅ **6F catheter calibration** ({mmPerPixel:.4f} mm/px)")
+                st.success(f"✅ **{calibSource} calibration** ({mmPerPixel:.4f} mm/px)")
             else:
                 st.warning(f"⚠️ **DICOM metadata** ({mmPerPixel:.4f} mm/px) — switch to 📏 mode in Segmentation for accuracy")
 
