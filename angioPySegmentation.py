@@ -13,8 +13,21 @@ import plotly.express as px
 import plotly.graph_objects as go
 import tifffile
 from streamlit_plotly_events import plotly_events
-from streamlit_drawable_canvas import st_canvas
 from PIL import Image
+
+# Monkey-patch for streamlit-drawable-canvas 0.9.3 compatibility with Streamlit >= 1.28
+# Old signature: image_to_url(image, width:int, clamp, channels, output_format, image_id)
+# New signature: image_to_url(image, layout_config:LayoutConfig, clamp, channels, output_format, image_id)
+import streamlit.elements.image as _st_image
+if not hasattr(_st_image, "image_to_url"):
+    from streamlit.elements.lib.image_utils import image_to_url as _new_image_to_url
+    from streamlit.elements.lib.layout_utils import LayoutConfig as _LayoutConfig
+    def _image_to_url(image, width, clamp, channels, output_format, image_id):
+        layout = _LayoutConfig(width=width if isinstance(width, int) else None)
+        return _new_image_to_url(image, layout, clamp, channels, output_format, image_id)
+    _st_image.image_to_url = _image_to_url
+
+from streamlit_drawable_canvas import st_canvas
 import predict
 import angioPyFunctions
 import scipy
@@ -213,11 +226,26 @@ if st.session_state.current_view == 'grid':
     uploadedDicoms = st.sidebar.file_uploader("Upload DICOM file(s)", key="gridDicomUploader", accept_multiple_files=True)
     if uploadedDicoms:
         import tempfile
+        if "uploaded_dicom_names" not in st.session_state:
+            st.session_state.uploaded_dicom_names = set()
+        new_files = 0
         for uploadedDicom in uploadedDicoms:
-            tmpPath = os.path.join(tempfile.gettempdir(), uploadedDicom.name)
-            with open(tmpPath, "wb") as f:
-                f.write(uploadedDicom.getbuffer())
-            st.session_state.dicom_registry[uploadedDicom.name] = tmpPath
+            if uploadedDicom.name not in st.session_state.uploaded_dicom_names:
+                tmpPath = os.path.join(tempfile.gettempdir(), uploadedDicom.name)
+                with open(tmpPath, "wb") as f:
+                    f.write(uploadedDicom.getbuffer())
+                st.session_state.dicom_registry[uploadedDicom.name] = tmpPath
+                st.session_state.uploaded_dicom_names.add(uploadedDicom.name)
+                new_files += 1
+        if new_files:
+            st.sidebar.success(f"✅ Dodano {new_files} plik(ów). Łącznie: {len(st.session_state.dicom_registry)}")
+    if "uploaded_dicom_names" in st.session_state and st.session_state.uploaded_dicom_names:
+        st.sidebar.caption(f"📂 Załadowanych: {len(st.session_state.dicom_registry)} plików")
+        if st.sidebar.button("🗑️ Usuń wgrane pliki", key="clear_uploads_btn"):
+            for name in list(st.session_state.uploaded_dicom_names):
+                st.session_state.dicom_registry.pop(name, None)
+            st.session_state.uploaded_dicom_names.clear()
+            st.rerun()
 
     if st.sidebar.button("🔃 Sortuj sekwencje", use_container_width=True, key="sidebar_sort_btn"):
         st.session_state._sidebar_sort_requested = True
@@ -377,16 +405,13 @@ if st.session_state.current_view == 'grid':
         with cols[0]:
             meta = st.session_state.dicom_metadata[name]
 
-            # ── Detect contrast BEFORE expander (cached, fast) ────────────
+            # ── Frame analysis (best frame detection, no contrast filtering) ──
             best_ix, start_ix, end_ix, tfc, timi, just = analyze_series_flow(path, os.path.getsize(path))
-            _card_has_contrast = (timi != 0)
+            _card_has_contrast = True  # show all series regardless of contrast detection
 
-            chosen_badge    = "⭐ " if meta.get("chosen_for_analysis", False) else ""
-            no_contrast_badge = "🚫 " if not _card_has_contrast else ""
-            with st.expander(f"{no_contrast_badge}{chosen_badge}{name}", expanded=_card_has_contrast):
-                if not _card_has_contrast:
-                    st.caption("🚫 Brak kontrastu (TIMI 0) — niedostępne do analizy")
-                else:
+            chosen_badge = "⭐ " if meta.get("chosen_for_analysis", False) else ""
+            with st.expander(f"{chosen_badge}{name}", expanded=True):
+                if True:
                     # ── Chosen for Analysis checkbox ──────────────────────────
                     prev_chosen = meta.get("chosen_for_analysis", False)
                     meta["chosen_for_analysis"] = st.checkbox(
@@ -485,57 +510,51 @@ if st.session_state.current_view == 'grid':
                     img_end   = cv2.resize(frame_end,   (512, 512))
                     combined  = numpy.concatenate((img_start, img_best, img_end), axis=1)
 
-                    if not has_contrast:
-                        # No contrast — show only the frames, no controls
-                        st.image(Image.fromarray(combined), use_column_width=True,
-                                 caption="Start | Peak | Last Frame")
-                        st.caption("🚫 Brak kontrastu — sekwencja niedostępna do analizy QCA")
+                    if st.session_state.get(f"play_{name}", False):
+                        import tempfile
+                        tmp_gif_path = os.path.join(tempfile.gettempdir(), f"angio_{name}_{os.path.getsize(path)}.gif")
+                        if not os.path.exists(tmp_gif_path):
+                            pil_frames = []
+                            for f_idx in range(pa.shape[0]):
+                                fr = pa[f_idx].astype(numpy.float32)
+                                fr = (fr - numpy.min(fr)) / (numpy.max(fr) - numpy.min(fr) + 1e-5) * 255.0
+                                fr_resized = cv2.resize(fr.astype(numpy.uint8), (512, 512))
+                                pil_frames.append(Image.fromarray(fr_resized))
+                            if len(pil_frames) > 0:
+                                framerate = getattr(dcm, "CineRate", getattr(dcm, "RecommendedDisplayFrameRate", 15))
+                                try: framerate = float(framerate)
+                                except: framerate = 15.0
+                                if framerate <= 0: framerate = 15.0
+                                pil_frames[0].save(tmp_gif_path, save_all=True, append_images=pil_frames[1:], duration=int(1000.0/framerate), loop=0)
+                        if os.path.exists(tmp_gif_path):
+                            c_gif_l, c_gif_c, c_gif_r = st.columns([1, 2, 1])
+                            c_gif_c.image(tmp_gif_path, use_column_width=True)
                     else:
-                        if st.session_state.get(f"play_{name}", False):
-                            import tempfile
-                            tmp_gif_path = os.path.join(tempfile.gettempdir(), f"angio_{name}_{os.path.getsize(path)}.gif")
-                            if not os.path.exists(tmp_gif_path):
-                                pil_frames = []
-                                for f_idx in range(pa.shape[0]):
-                                    fr = pa[f_idx].astype(numpy.float32)
-                                    fr = (fr - numpy.min(fr)) / (numpy.max(fr) - numpy.min(fr) + 1e-5) * 255.0
-                                    fr_resized = cv2.resize(fr.astype(numpy.uint8), (512, 512))
-                                    pil_frames.append(Image.fromarray(fr_resized))
-                                if len(pil_frames) > 0:
-                                    framerate = getattr(dcm, "CineRate", getattr(dcm, "RecommendedDisplayFrameRate", 15))
-                                    try: framerate = float(framerate)
-                                    except: framerate = 15.0
-                                    if framerate <= 0: framerate = 15.0
-                                    pil_frames[0].save(tmp_gif_path, save_all=True, append_images=pil_frames[1:], duration=int(1000.0/framerate), loop=0)
-                            if os.path.exists(tmp_gif_path):
-                                c_gif_l, c_gif_c, c_gif_r = st.columns([1, 2, 1])
-                                c_gif_c.image(tmp_gif_path, use_column_width=True)
-                        else:
-                            st.image(Image.fromarray(combined), use_column_width=True,
-                                     caption="Start | Peak (QCA) | Last Frame")
+                        st.image(Image.fromarray(combined), use_column_width=True,
+                                 caption="Start | Peak (QCA) | Last Frame")
 
-                        calc_timi = str(timi)
-                        current_ovr = meta.get("timi_override", "Auto")
-                        if current_ovr not in ["Auto", "0", "1", "2", "3"]: current_ovr = "Auto"
-                        meta["timi_override"] = st.selectbox("TIMI Grade", ["Auto", "0", "1", "2", "3"], index=["Auto", "0", "1", "2", "3"].index(current_ovr), key=f"timi_{name}")
-                        st.caption(f"Calculated: Grade {timi} - {just}")
-                        st.session_state.dicom_metadata[name] = meta
+                    calc_timi = str(timi)
+                    current_ovr = meta.get("timi_override", "Auto")
+                    if current_ovr not in ["Auto", "0", "1", "2", "3"]: current_ovr = "Auto"
+                    meta["timi_override"] = st.selectbox("TIMI Grade", ["Auto", "0", "1", "2", "3"], index=["Auto", "0", "1", "2", "3"].index(current_ovr), key=f"timi_{name}")
+                    st.caption(f"Calculated: Grade {timi} - {just}")
+                    st.session_state.dicom_metadata[name] = meta
 
-                        c_btn1, c_btn2 = st.columns(2)
-                        vid_btn_text = "⏹️ Stop" if st.session_state.get(f"play_{name}", False) else "🎥 Odtwórz"
-                        if c_btn1.button(vid_btn_text, key=f"play_btn_{name}"):
-                            st.session_state[f"play_{name}"] = not st.session_state.get(f"play_{name}", False)
-                            st.rerun()
-                        if c_btn2.button("🔬 Analizuj (QCA)", key=f"btn_{name}"):
-                            if st.session_state.selected_dicom != path:
-                                for k in list(st.session_state.keys()):
-                                    if k not in ['current_view', 'stage', 'dicom_registry', 'dicom_metadata', 'patient_cart', 'patient_id']:
-                                        del st.session_state[k]
-                            st.session_state.current_view = 'analysis'
-                            st.session_state.selected_dicom = path
-                            st.session_state.dicomLabel = name
-                            st.session_state.best_frame_ix = best_ix
-                            st.rerun()
+                    c_btn1, c_btn2 = st.columns(2)
+                    vid_btn_text = "⏹️ Stop" if st.session_state.get(f"play_{name}", False) else "🎥 Odtwórz"
+                    if c_btn1.button(vid_btn_text, key=f"play_btn_{name}"):
+                        st.session_state[f"play_{name}"] = not st.session_state.get(f"play_{name}", False)
+                        st.rerun()
+                    if c_btn2.button("🔬 Analizuj (QCA)", key=f"btn_{name}"):
+                        if st.session_state.selected_dicom != path:
+                            for k in list(st.session_state.keys()):
+                                if k not in ['current_view', 'stage', 'dicom_registry', 'dicom_metadata', 'patient_cart', 'patient_id']:
+                                    del st.session_state[k]
+                        st.session_state.current_view = 'analysis'
+                        st.session_state.selected_dicom = path
+                        st.session_state.dicomLabel = name
+                        st.session_state.best_frame_ix = best_ix
+                        st.rerun()
 
                 except Exception as e:
                     st.warning(f"Error reading preview for {name}: {e}")
@@ -616,7 +635,11 @@ if selectedDicom is not None:
         else:
             slice_ix = 0
             
-        predictedMask = numpy.zeros_like(pixelArray[slice_ix, :, :])
+        _mask_key = f"predictedMask_{st.session_state.get('dicomLabel','')}_{slice_ix}"
+        if _mask_key in st.session_state:
+            predictedMask = st.session_state[_mask_key]
+        else:
+            predictedMask = numpy.zeros_like(pixelArray[slice_ix, :, :])
 
     with stepTwo:
         meta = st.session_state.dicom_metadata.get(st.session_state.dicomLabel, {}) if "dicomLabel" in st.session_state else {}
@@ -638,10 +661,16 @@ if selectedDicom is not None:
 
     # ── SEGMENTATION TAB ──────────────────────────────────────────────────────
     with tab1:
-        objects = pd.DataFrame()
+        objects = st.session_state.get(f"objects_{_mask_key}", pd.DataFrame())
 
         selectedFrame     = pixelArray[slice_ix, :, :]
         selectedFrame     = cv2.resize(selectedFrame, (512, 512))
+        # Normalize to uint8 (DICOM frames are typically uint16)
+        f_min, f_max = selectedFrame.min(), selectedFrame.max()
+        if f_max > f_min:
+            selectedFrame = ((selectedFrame.astype(numpy.float32) - f_min) / (f_max - f_min) * 255).astype(numpy.uint8)
+        else:
+            selectedFrame = numpy.zeros_like(selectedFrame, dtype=numpy.uint8)
         selectedFrameRGB  = cv2.cvtColor(selectedFrame, cv2.COLOR_GRAY2RGB)
 
         col1, col2 = st.columns(2)
@@ -692,13 +721,13 @@ if selectedDicom is not None:
 
                 calibDotCanvas = st_canvas(
                     fill_color="#00000000",
-                    stroke_width=0, 
+                    stroke_width=0,
                     stroke_color="#00000000",
                     background_color='black',
                     background_image=Image.fromarray(calibBgFrame),
                     update_streamlit=True,
-                    height=512,
-                    width=512,
+                    height=600,
+                    width=600,
                     drawing_mode="point",
                     point_display_radius=0,
                     key="canvas_calib_dots_v2",
@@ -715,11 +744,12 @@ if selectedDicom is not None:
                             denom = 2 * (alpha - 2*beta + gamma)
                             return float(idx) if denom == 0 else idx + (alpha - gamma) / denom
 
-                        cx1 = int(float(dotObjs.iloc[0].get("left", 0)) + 5)
-                        cy1 = int(float(dotObjs.iloc[0].get("top",  0)) + 5)
-                        cx2 = int(float(dotObjs.iloc[1].get("left", 0)) + 5)
-                        cy2 = int(float(dotObjs.iloc[1].get("top",  0)) + 5)
-                        
+                        _cs = 512 / 600  # canvas→frame coordinate scale
+                        cx1 = int((float(dotObjs.iloc[0].get("left", 0)) + 5) * _cs)
+                        cy1 = int((float(dotObjs.iloc[0].get("top",  0)) + 5) * _cs)
+                        cx2 = int((float(dotObjs.iloc[1].get("left", 0)) + 5) * _cs)
+                        cy2 = int((float(dotObjs.iloc[1].get("top",  0)) + 5) * _cs)
+
                         cx1, cy1 = max(0, min(511, cx1)), max(0, min(511, cy1))
                         cx2, cy2 = max(0, min(511, cx2)), max(0, min(511, cy2))
                         
@@ -842,6 +872,9 @@ if selectedDicom is not None:
                     seg_key = "canvas_seg_" + str(dicomLabel)
                     if seg_key in st.session_state:
                         del st.session_state[seg_key]
+                    for k in [_mask_key, f"objects_{_mask_key}"]:
+                        if k in st.session_state:
+                            del st.session_state[k]
                     st.rerun()
                 annotationCanvas = st_canvas(
                     fill_color="red",
@@ -850,8 +883,8 @@ if selectedDicom is not None:
                     background_color='black',
                     background_image=Image.fromarray(selectedFrameRGB),
                     update_streamlit=True,
-                    height=512,
-                    width=512,
+                    height=600,
+                    width=600,
                     drawing_mode="point",
                     point_display_radius=2,
                     key="canvas_seg_" + str(dicomLabel),
@@ -877,9 +910,10 @@ if selectedDicom is not None:
                         for c in objects.select_dtypes(include=['object']).columns:
                             objects[c] = objects[c].astype("str")
 
+                        _cs = 512 / 600  # canvas→frame coordinate scale
                         groundTruthPoints = numpy.vstack((
-                            numpy.array(objects['top']),
-                            numpy.array(objects['left'] + 3.5)
+                            numpy.array(objects['top'].astype(float))   * _cs,
+                            numpy.array(objects['left'].astype(float) + 3.5) * _cs
                         )).T
 
                         with st.spinner(f"Running segmentation on {len(objects)} points (30–60 s on CPU)…"):
@@ -890,6 +924,8 @@ if selectedDicom is not None:
                                 )
                                 predictedMask = predict.CoronaryDataset.mask2image(mask)
                                 predictedMask = numpy.array(predictedMask)
+                                st.session_state[_mask_key] = predictedMask
+                                st.session_state[f"objects_{_mask_key}"] = objects
                             except Exception as segErr:
                                 st.error(f"Segmentation error: {segErr}")
 
@@ -918,7 +954,7 @@ if selectedDicom is not None:
                             dx, dy = L_w * numpy.cos(tube_theta), L_w * numpy.sin(tube_theta)
                             cv2.line(calibShowFrame, (int(pt1[0]-dx), int(pt1[1]-dy)), (int(pt1[0]+dx), int(pt1[1]+dy)), (255, 0, 0), 1)
                             cv2.line(calibShowFrame, (int(pt2[0]-dx), int(pt2[1]-dy)), (int(pt2[0]+dx), int(pt2[1]+dy)), (255, 0, 0), 1)
-                st.image(calibShowFrame, use_column_width=True)
+                st.image(calibShowFrame, width=600)
             else:
                 st.markdown("<h5 style='text-align:center; color:white;'>🔍 Zoom & Mask Correction</h5>", unsafe_allow_html=True)
                 
@@ -963,8 +999,8 @@ if selectedDicom is not None:
                             if len(stroke_pts) > 2:
                                 stroke_pts = numpy.array(stroke_pts, dtype=numpy.float32)
                                 scaled_pts = numpy.zeros_like(stroke_pts, dtype=numpy.int32)
-                                scaled_pts[:, 0] = left_x + stroke_pts[:, 0] * (w_z / 512.0)
-                                scaled_pts[:, 1] = top_y + stroke_pts[:, 1] * (h_z / 512.0)
+                                scaled_pts[:, 0] = left_x + stroke_pts[:, 0] * (w_z / 600.0)
+                                scaled_pts[:, 1] = top_y + stroke_pts[:, 1] * (h_z / 600.0)
                                 
                                 s_rx, s_ry = scaled_pts[0]
                                 e_rx, e_ry = scaled_pts[-1]
@@ -1049,8 +1085,8 @@ if selectedDicom is not None:
                     background_color='black',
                     background_image=Image.fromarray(viewport_overlay),
                     update_streamlit=True,
-                    height=512,
-                    width=512,
+                    height=600,
+                    width=600,
                     drawing_mode="freedraw",
                     point_display_radius=3,
                     key=canvas_key,
@@ -1063,186 +1099,135 @@ if selectedDicom is not None:
         predictedMaskRGBA = cv2.merge((predictedMask, a_channel))
 
         with tab2:
-            tab2Col1, tab2Col2 = st.columns([20, 10])
+            # ── Compute centreline & vessel thicknesses ───────────────────────
+            EDT  = scipy.ndimage.distance_transform_edt(cv2.cvtColor(predictedMaskRGBA, cv2.COLOR_RGBA2GRAY))
+            skel = angioPyFunctions.skeletonise(predictedMaskRGBA)
+            tck  = angioPyFunctions.skelSplinerWithThickness(skel=skel, EDT=EDT, smoothing=5)
 
-            with tab2Col1:
-                st.markdown("<h5 style='text-align:center; color:white;'><br>Artery profile</h5>", unsafe_allow_html=True)
+            splinePointsY, splinePointsX, splineThicknesses = scipy.interpolate.splev(
+                numpy.linspace(0.0, 1.0, 1000), tck)
 
-                EDT  = scipy.ndimage.distance_transform_edt(cv2.cvtColor(predictedMaskRGBA, cv2.COLOR_RGBA2GRAY))
-                skel = angioPyFunctions.skeletonise(predictedMaskRGBA)
-                tck  = angioPyFunctions.skelSplinerWithThickness(skel=skel, EDT=EDT, smoothing=5)
+            clippingLength = 20
 
-                splinePointsY, splinePointsX, splineThicknesses = scipy.interpolate.splev(
-                    numpy.linspace(0.0, 1.0, 1000), tck)
+            sp_x  = splinePointsX[clippingLength:-clippingLength]
+            sp_y  = splinePointsY[clippingLength:-clippingLength]
+            sp_dx = numpy.gradient(sp_x)
+            sp_dy = numpy.gradient(sp_y)
 
-                clippingLength    = 20
+            _mask_2d = numpy.any(predictedMask > 0, axis=-1)
+            _h, _w   = _mask_2d.shape
 
-                # ── Centreline coordinates & tangents ────────────────────────────────
-                sp_x  = splinePointsX[clippingLength:-clippingLength]
-                sp_y  = splinePointsY[clippingLength:-clippingLength]
-                sp_dx = numpy.gradient(sp_x)
-                sp_dy = numpy.gradient(sp_y)
+            def _raycast_1d(cx, cy, nx, ny, max_r=80):
+                cx, cy = float(cx), float(cy)
+                for r in range(1, max_r + 1):
+                    rx = int(round(cx + nx * r))
+                    ry = int(round(cy + ny * r))
+                    if rx < 0 or ry < 0 or rx >= _w or ry >= _h:
+                        return float(r - 1)
+                    if not _mask_2d[ry, rx]:
+                        return float(r - 1)
+                return float(max_r)
 
-                # ── Orthogonal raycasting — accurate lumen width ──────────────────
-                # For each centreline point cast a ray perpendicular to the
-                # tangent in both directions and sum the distances to the
-                # mask boundary.  This gives the true cross-sectional diameter
-                # and is more accurate than EDT*2 which overestimates at bends.
-                _mask_2d = numpy.any(predictedMask > 0, axis=-1)
-                _h, _w   = _mask_2d.shape
+            _edt_thick = splineThicknesses[clippingLength:-clippingLength] * 2
+            raycast_thicknesses = numpy.empty(len(sp_x), dtype=numpy.float32)
+            for _i in range(len(sp_x)):
+                _tx, _ty = sp_dx[_i], sp_dy[_i]
+                _len = numpy.hypot(_tx, _ty)
+                if _len > 0:
+                    _nx, _ny = -_ty / _len, _tx / _len
+                    _rp = _raycast_1d(sp_x[_i], sp_y[_i],  _nx,  _ny)
+                    _rn = _raycast_1d(sp_x[_i], sp_y[_i], -_nx, -_ny)
+                    raycast_thicknesses[_i] = _rp + _rn
+                else:
+                    raycast_thicknesses[_i] = _edt_thick[_i]
 
-                def _raycast_1d(cx, cy, nx, ny, max_r=80):
-                    """Return pixel distance from (cx,cy) to mask edge in direction (nx,ny)."""
-                    cx, cy = float(cx), float(cy)
-                    for r in range(1, max_r + 1):
-                        rx = int(round(cx + nx * r))
-                        ry = int(round(cy + ny * r))
-                        if rx < 0 or ry < 0 or rx >= _w or ry >= _h:
-                            return float(r - 1)
-                        if not _mask_2d[ry, rx]:
-                            return float(r - 1)
-                    return float(max_r)
+            _kernel = numpy.ones(7) / 7
+            raycast_thicknesses = numpy.convolve(raycast_thicknesses, _kernel, mode='same')
+            raycast_thicknesses[:3]  = raycast_thicknesses[3]
+            raycast_thicknesses[-3:] = raycast_thicknesses[-4]
+            vesselThicknesses = raycast_thicknesses
 
-                _edt_thick = splineThicknesses[clippingLength:-clippingLength] * 2  # fallback
-                raycast_thicknesses = numpy.empty(len(sp_x), dtype=numpy.float32)
-                for _i in range(len(sp_x)):
-                    _tx, _ty = sp_dx[_i], sp_dy[_i]
-                    _len = numpy.hypot(_tx, _ty)
-                    if _len > 0:
-                        _nx, _ny = -_ty / _len, _tx / _len
-                        _rp = _raycast_1d(sp_x[_i], sp_y[_i],  _nx,  _ny)
-                        _rn = _raycast_1d(sp_x[_i], sp_y[_i], -_nx, -_ny)
-                        raycast_thicknesses[_i] = _rp + _rn
-                    else:
-                        raycast_thicknesses[_i] = _edt_thick[_i]
+            # ── Controls row ─────────────────────────────────────────────────
+            current_meta = st.session_state.dicom_metadata.get(st.session_state.dicomLabel, {}) if "dicomLabel" in st.session_state else {}
+            current_phase = current_meta.get("phase", "PRE-PCI")
 
-                # 7-point moving average: removes pixel noise, preserves stenoses
-                _kernel = numpy.ones(7) / 7
-                raycast_thicknesses = numpy.convolve(raycast_thicknesses, _kernel, mode='same')
-                # Restore endpoints (convolve 'same' distorts first/last 3 pts)
-                raycast_thicknesses[:3]  = raycast_thicknesses[3]
-                raycast_thicknesses[-3:] = raycast_thicknesses[-4]
+            def update_phase():
+                if "dicomLabel" in st.session_state and st.session_state.dicomLabel in st.session_state.dicom_metadata:
+                    st.session_state.dicom_metadata[st.session_state.dicomLabel]["phase"] = st.session_state.analysis_phase_toggle
 
-                vesselThicknesses = raycast_thicknesses
-
-                fig = px.line(
-                    x=numpy.arange(1, len(vesselThicknesses) + 1),
-                    y=vesselThicknesses,
-                    labels=dict(x="Centreline point", y="Thickness (pixels)"),
-                    width=800
-                )
-                fig.update_traces(line_color='rgb(31, 119, 180)', line={'width': 4})
-                fig.update_xaxes(showline=True, linewidth=2, linecolor='white', showgrid=False, gridcolor='white')
-                fig.update_yaxes(showline=True, linewidth=2, linecolor='white', gridcolor='white')
-                fig.update_layout(
-                    yaxis_range=[0, numpy.max(vesselThicknesses) * 1.2],
-                    font_color="white", title_font_color="white",
-                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
-                )
-                selected_points = plotly_events(fig)
-
-            with tab2Col2:
-                st.markdown("<h5 style='text-align:center; color:white;'><br>Contours</h5>", unsafe_allow_html=True)
-
-                current_meta = st.session_state.dicom_metadata.get(st.session_state.dicomLabel, {}) if "dicomLabel" in st.session_state else {}
-                current_phase = current_meta.get("phase", "PRE-PCI")
-
-                def update_phase():
-                    if "dicomLabel" in st.session_state and st.session_state.dicomLabel in st.session_state.dicom_metadata:
-                        st.session_state.dicom_metadata[st.session_state.dicomLabel]["phase"] = st.session_state.analysis_phase_toggle
-
+            ctrl1, ctrl2, ctrl3 = st.columns([2, 1, 1])
+            with ctrl1:
                 st.radio("⏳ Procedure Phase", ["PRE-PCI", "POST-PCI"],
                          index=0 if current_phase == "PRE-PCI" else 1,
                          key="analysis_phase_toggle",
                          horizontal=True,
                          on_change=update_phase)
+            swap_direction = ctrl2.checkbox("🔄 Swap Prox/Dist", value=False)
+            ostial_lesion  = ctrl3.checkbox("🚨 Ostial Lesion",  value=False)
 
-                col_qca1, col_qca2 = st.columns(2)
-                swap_direction = col_qca1.checkbox("🔄 Swap Prox/Dist", value=False)
-                ostial_lesion = col_qca2.checkbox("🚨 Ostial Lesion", value=False)
+            # ── QCA indices ──────────────────────────────────────────────────
+            refLen   = max(1, int(len(vesselThicknesses) * 0.20))
+            prox_raw = numpy.argmax(vesselThicknesses[:refLen])
+            dist_raw = len(vesselThicknesses) - refLen + numpy.argmax(vesselThicknesses[-refLen:])
 
-                # --- ADD QCA REFERENCE INDICATORS ---
-                refLen = max(1, int(len(vesselThicknesses) * 0.20))
-                prox_raw = numpy.argmax(vesselThicknesses[:refLen])
-                dist_raw = len(vesselThicknesses) - refLen + numpy.argmax(vesselThicknesses[-refLen:])
+            if swap_direction:
+                prox_idx, dist_idx = dist_raw, prox_raw
+            else:
+                prox_idx, dist_idx = prox_raw, dist_raw
 
-                if swap_direction:
-                    prox_idx, dist_idx = dist_raw, prox_raw
-                else:
-                    prox_idx, dist_idx = prox_raw, dist_raw
+            idx_start = min(prox_idx, dist_idx)
+            idx_end   = max(prox_idx, dist_idx)
+            if ostial_lesion:
+                idx_start = 0
 
-                idx_start = min(prox_idx, dist_idx)
-                idx_end   = max(prox_idx, dist_idx)
-                if ostial_lesion:
-                    idx_start = 0
+            mld_idx = idx_start + numpy.argmin(vesselThicknesses[idx_start:idx_end+1])
 
-                mld_idx = idx_start + numpy.argmin(vesselThicknesses[idx_start:idx_end+1])
+            # ── Build contour image ───────────────────────────────────────────
+            selectedFrameRGBA = cv2.cvtColor(selectedFrame, cv2.COLOR_GRAY2RGBA)
+            v_mask_right = (numpy.any(predictedMaskRGBA[:, :, :3] > 0, axis=-1) * 255).astype(numpy.uint8)
+            contour = angioPyFunctions.maskOutliner(labelledArtery=v_mask_right, outlineThickness=1)
+            selectedFrameRGBA[contour, :] = [
+                angioPyFunctions.colourTableList[selectedArtery][2],
+                angioPyFunctions.colourTableList[selectedArtery][1],
+                angioPyFunctions.colourTableList[selectedArtery][0],
+                255
+            ]
 
+            def draw_indicator_with_text(idx, label, color, is_mld=False):
+                if idx < len(sp_x):
+                    cx, cy = sp_x[idx], sp_y[idx]
+                    tx, ty = sp_dx[idx], sp_dy[idx]
+                    length = numpy.hypot(tx, ty)
+                    if length > 0:
+                        nx, ny = -ty / length, tx / length
+                        radius = vesselThicknesses[idx] / 2.0
+                        p1 = (int(cx + nx * radius), int(cy + ny * radius))
+                        p2 = (int(cx - nx * radius), int(cy - ny * radius))
+                        cv2.line(selectedFrameRGBA, p1, p2, color, 2)
+                        cv2.putText(selectedFrameRGBA, label, (int(p1[0]+5), int(p1[1]-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
 
+            _phase_here = st.session_state.dicom_metadata.get(dicomLabel, {}).get("phase", "UNKNOWN")
+            if _phase_here != "POST-PCI":
+                if not ostial_lesion:
+                    draw_indicator_with_text(prox_idx, "Prox", (50, 255, 50, 255))
+                draw_indicator_with_text(dist_idx, "Dist", (50, 255, 50, 255))
+            draw_indicator_with_text(mld_idx, "MLD", (255, 50, 50, 255), is_mld=True)
 
-                selectedFrameRGBA = cv2.cvtColor(selectedFrame, cv2.COLOR_GRAY2RGBA)
-                v_mask_right = (numpy.any(predictedMaskRGBA[:, :, :3] > 0, axis=-1) * 255).astype(numpy.uint8)
-                contour = angioPyFunctions.maskOutliner(labelledArtery=v_mask_right, outlineThickness=1)
-                selectedFrameRGBA[contour, :] = [
-                    angioPyFunctions.colourTableList[selectedArtery][2],
-                    angioPyFunctions.colourTableList[selectedArtery][1],
-                    angioPyFunctions.colourTableList[selectedArtery][0],
-                    255
-                ]
-
-                # --- ADD QCA REFERENCE INDICATORS ---
-                refLen = max(1, int(len(vesselThicknesses) * 0.20))
-                prox_raw = numpy.argmax(vesselThicknesses[:refLen])
-                dist_raw = len(vesselThicknesses) - refLen + numpy.argmax(vesselThicknesses[-refLen:])
-                
-                if swap_direction:
-                    prox_idx, dist_idx = dist_raw, prox_raw
-                else:
-                    prox_idx, dist_idx = prox_raw, dist_raw
-                    
-                idx_start = min(prox_idx, dist_idx)
-                idx_end   = max(prox_idx, dist_idx)
-                if ostial_lesion:
-                    idx_start = 0
-                
-                mld_idx = idx_start + numpy.argmin(vesselThicknesses[idx_start:idx_end+1])
-                
-                sp_x = splinePointsX[clippingLength:-clippingLength]
-                sp_y = splinePointsY[clippingLength:-clippingLength]
-                sp_dx = numpy.gradient(sp_x)
-                sp_dy = numpy.gradient(sp_y)
-                
-                def draw_indicator_with_text(idx, label, color, is_mld=False):
-                    if idx < len(sp_x):
-                        cx, cy = sp_x[idx], sp_y[idx]
-                        tx, ty = sp_dx[idx], sp_dy[idx]
-                        length = numpy.hypot(tx, ty)
-                        if length > 0:
-                            nx, ny = -ty / length, tx / length
-                            radius = vesselThicknesses[idx] / 2.0
-                            p1 = (int(cx + nx * radius), int(cy + ny * radius))
-                            p2 = (int(cx - nx * radius), int(cy - ny * radius))
-                            cv2.line(selectedFrameRGBA, p1, p2, color, 2)
-                            cv2.putText(selectedFrameRGBA, label, (int(p1[0]+5), int(p1[1]-5)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
-
-
-                _phase_here = st.session_state.dicom_metadata.get(dicomLabel, {}).get("phase", "UNKNOWN")
-                if _phase_here != "POST-PCI":
-                    if not ostial_lesion:
-                        draw_indicator_with_text(prox_idx, "Prox", (50, 255, 50, 255))
-                    draw_indicator_with_text(dist_idx, "Dist", (50, 255, 50, 255))
-                draw_indicator_with_text(mld_idx, "MLD", (255, 50, 50, 255), is_mld=True)
-
-                fig2 = px.imshow(selectedFrameRGBA)
-                fig2.update_xaxes(visible=False)
-                fig2.update_yaxes(visible=False)
-                fig2.update_layout(margin={"t": 0, "b": 0, "r": 0, "l": 0, "pad": 0})
-                fig2.update_traces(dict(showscale=False, coloraxis=None, colorscale='gray'), selector={'type': 'heatmap'})
-                fig2.add_trace(go.Scatter(
-                    x=splinePointsX[clippingLength:-clippingLength],
-                    y=splinePointsY[clippingLength:-clippingLength],
-                    line=dict(width=1)
-                ))
+            # ── Contours image — centered, large ─────────────────────────────
+            st.markdown("<h5 style='text-align:center; color:white;'>Contours</h5>", unsafe_allow_html=True)
+            fig2 = px.imshow(selectedFrameRGBA)
+            fig2.update_xaxes(visible=False)
+            fig2.update_yaxes(visible=False)
+            fig2.update_layout(margin={"t": 0, "b": 0, "r": 0, "l": 0, "pad": 0},
+                               height=700)
+            fig2.update_traces(dict(showscale=False, coloraxis=None, colorscale='gray'), selector={'type': 'heatmap'})
+            fig2.add_trace(go.Scatter(
+                x=splinePointsX[clippingLength:-clippingLength],
+                y=splinePointsY[clippingLength:-clippingLength],
+                line=dict(width=1)
+            ))
+            _, fig2_col, _ = st.columns([1, 6, 1])
+            with fig2_col:
                 st.plotly_chart(fig2, use_container_width=True)
 
             # ── QCA METRICS (outside nested columns) ──────────────────────────
