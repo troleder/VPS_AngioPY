@@ -32,9 +32,10 @@ scikit-learn>=1.5
 SimpleITK>=2.4
 
 # Streamlit UI
-streamlit>=1.38,<1.43
+# streamlit-plotly-events 0.0.6 uses internal streamlit APIs removed after 1.38
+streamlit==1.38.0
 streamlit-drawable-canvas==0.9.3
-streamlit-plotly-events>=0.0.6
+streamlit-plotly-events==0.0.6
 
 # Plotting
 plotly>=5.22
