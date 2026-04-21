@@ -1494,7 +1494,7 @@ if selectedDicom is not None:
                     os.makedirs(save_dir, exist_ok=True)
                     
                     safe_patient_id = st.session_state.patient_id if st.session_state.patient_id else "NoID"
-                    pdf_filename = f"{safe_patient_id}_{meta['vessel']}_{meta['phase']}.pdf"
+                    pdf_filename = f"{safe_patient_id}_{meta['vessel']}_AHA{meta['aha']}_{meta['phase']}.pdf"
                     pdf_path = os.path.join(save_dir, pdf_filename)
                     
                     with PdfPages(pdf_path) as pdf:
