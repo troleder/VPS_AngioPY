@@ -697,8 +697,19 @@ if selectedDicom is not None:
                 )
                 catheterMm = CATHETER_SIZES[catheterChoice]
 
+                manualMode = st.checkbox(
+                    "✍️ Manual line — klikaj dwie przeciwległe krawędzie cewnika (wall ↔ wall)",
+                    value=False,
+                    key="calibManualMode",
+                    help="W trybie ręcznym odległość między punktami = średnica cewnika. "
+                         "Użyteczne, gdy auto-FWHM nie radzi sobie (niski kontrast, cienki cewnik)."
+                )
+
                 c_head1, c_head2 = st.columns([3, 1])
-                c_head1.caption("Zaznacz dwa punkty (początek i koniec) wzdłuż cewnika, aby wyznaczyć odcinek do kalibracji.")
+                if manualMode:
+                    c_head1.caption("Klik 1: jedna krawędź cewnika. Klik 2: przeciwległa krawędź. Odległość w linii prostej = średnica.")
+                else:
+                    c_head1.caption("Zaznacz dwa punkty wzdłuż cewnika — system automatycznie zmierzy średnicę metodą FWHM.")
                 if c_head2.button("🔄 Redo Calib"):
                     for k in ["calibPoints", "mmPerPixelCalib", "calibLinePx", "canvas_calib_dots_v2"]:
                         if k in st.session_state:
@@ -746,11 +757,40 @@ if selectedDicom is not None:
                     if len(dotObjs) >= 2 and "left" in dotObjs.columns:
                         detectedDiameters = []
                         calibPoints = []
-                        def get_subpixel_peak(idx, array):
-                            if idx == 0 or idx == len(array) - 1: return float(idx)
-                            alpha, beta, gamma = array[idx-1], array[idx], array[idx+1]
-                            denom = 2 * (alpha - 2*beta + gamma)
-                            return float(idx) if denom == 0 else idx + (alpha - gamma) / denom
+
+                        def _fwhm_calib(profile):
+                            """Full-Width-at-Half-Maximum of intensity valley (catheter darker than tissue).
+                            Returns (diameter_px, left_sub_idx, right_sub_idx) or None."""
+                            n = len(profile)
+                            if n < 5:
+                                return None
+                            mid = n // 2
+                            search_r = max(3, n // 4)
+                            lo, hi = max(0, mid - search_r), min(n, mid + search_r)
+                            valley_idx = lo + int(numpy.argmin(profile[lo:hi]))
+                            valley_val = float(profile[valley_idx])
+                            baseline   = float(numpy.percentile(profile, 85))
+                            if baseline - valley_val < 3:   # not enough contrast
+                                return None
+                            half_val = (baseline + valley_val) / 2.0
+                            # walk left until profile crosses half_val going up
+                            left = valley_idx
+                            while left > 0 and profile[left] < half_val:
+                                left -= 1
+                            if profile[left] < half_val:
+                                return None
+                            denom_l = profile[left] - profile[left + 1]
+                            left_sub = float(left) + (profile[left] - half_val) / denom_l if denom_l != 0 else float(left)
+                            # walk right
+                            right = valley_idx
+                            while right < n - 1 and profile[right] < half_val:
+                                right += 1
+                            if profile[right] < half_val:
+                                return None
+                            denom_r = profile[right] - profile[right - 1]
+                            right_sub = float(right) - (profile[right] - half_val) / denom_r if denom_r != 0 else float(right)
+                            diam = right_sub - left_sub
+                            return (diam, left_sub, right_sub) if diam > 1 else None
 
                         _cs = 512 / 600  # canvas→frame coordinate scale
                         cx1 = int((float(dotObjs.iloc[0].get("left", 0)) + 5) * _cs)
@@ -760,46 +800,52 @@ if selectedDicom is not None:
 
                         cx1, cy1 = max(0, min(511, cx1)), max(0, min(511, cy1))
                         cx2, cy2 = max(0, min(511, cx2)), max(0, min(511, cy2))
-                        
+
                         dx = cx2 - cx1
                         dy = cy2 - cy1
                         dist = numpy.hypot(dx, dy)
                         tube_theta = numpy.arctan2(dy, dx)
-                        
-                        if dist > 5:
-                            # 1. Estimate base diameter at the middle to know how far out to look
+
+                        # ── MANUAL LINE MODE: euclidean distance = catheter diameter ─────
+                        if manualMode and dist > 2:
+                            avgDiamManual = float(dist)
+                            calibPoints.append({
+                                'ref':        ((int(cx1), int(cy1)), (int(cx2), int(cy2))),
+                                'left_wall':  [(float(cx1), float(cy1))],
+                                'right_wall': [(float(cx2), float(cy2))],
+                                'diam':       avgDiamManual
+                            })
+                            detectedDiameters.append(avgDiamManual)
+
+                        # ── AUTO FWHM MODE: track along catheter axis ─────────────────────
+                        elif (not manualMode) and dist > 5:
+                            # 1. Estimate base diameter at the middle with FWHM
                             mid_cx = (cx1 + cx2) / 2
                             mid_cy = (cy1 + cy2) / 2
                             cs_theta_init = tube_theta - numpy.pi/2
                             base_t = numpy.arange(-60, 60)
-                            
+
                             tx = mid_cx + base_t * numpy.cos(cs_theta_init)
                             ty = mid_cy + base_t * numpy.sin(cs_theta_init)
                             coords = numpy.vstack((ty, tx))
                             profile = scipy.ndimage.map_coordinates(selectedFrame.astype(float), coords, mode='nearest')
-                            smoothed = numpy.convolve(profile, numpy.ones(3)/3.0, mode='same')
-                            grad = numpy.abs(numpy.gradient(smoothed))
-                            
-                            bestDiam = 15 # fallback diameter in pixels
-                            if grad.max() > 0:
-                                peaks = scipy.signal.find_peaks(grad, height=grad.max()*0.25, distance=4)[0]
-                                if len(peaks) >= 2:
-                                    top2 = numpy.argsort(grad[peaks])[-2:]
-                                    bestDiam = abs(get_subpixel_peak(max(peaks[top2]), grad) - get_subpixel_peak(min(peaks[top2]), grad))
-                            
+
+                            fwhm0 = _fwhm_calib(profile)
+                            bestDiam = fwhm0[0] if fwhm0 is not None else 15
+
                             # 2. Track exactly along the vector from point 1 to point 2
                             num_steps = max(2, int(dist / 5))
-                            
+
                             lw, rw = [], []
                             caxis = tube_theta
-                            
+
                             mid_x1, mid_y1, mid_x2, mid_y2 = None, None, None, None
-                            
+
                             for step in range(num_steps + 1):
                                 frac = step / float(num_steps)
                                 ccx = cx1 + frac * dx
                                 ccy = cy1 + frac * dy
-                                
+
                                 cs_theta = caxis - numpy.pi/2
                                 track_L = max(15, int(bestDiam * 1.5))
                                 track_t = numpy.arange(-track_L, track_L)
@@ -807,31 +853,25 @@ if selectedDicom is not None:
                                 ty = ccy + track_t * numpy.sin(cs_theta)
                                 t_coords = numpy.vstack((ty, tx))
                                 t_prof = scipy.ndimage.map_coordinates(selectedFrame.astype(float), t_coords, mode='nearest')
-                                t_smooth = numpy.convolve(t_prof, numpy.ones(3)/3.0, mode='same')
-                                t_grad = numpy.abs(numpy.gradient(t_smooth))
-                                
-                                if t_grad.max() == 0: continue
-                                t_peaks = scipy.signal.find_peaks(t_grad, height=t_grad.max()*0.20, distance=max(2, int(bestDiam*0.5)))[0]
-                                if len(t_peaks) >= 2:
-                                    t_idx = numpy.argsort(t_grad[t_peaks])[-2:]
-                                    tp0, tp1 = min(t_peaks[t_idx]), max(t_peaks[t_idx])
-                                    sp0 = get_subpixel_peak(tp0, t_grad)
-                                    sp1 = get_subpixel_peak(tp1, t_grad)
-                                    cur_diam = sp1 - sp0
-                                    detectedDiameters.append(cur_diam)
-                                    
-                                    woff_0 = -track_L + sp0
-                                    woff_1 = -track_L + sp1
-                                    wx0 = ccx + woff_0 * numpy.cos(cs_theta)
-                                    wy0 = ccy + woff_0 * numpy.sin(cs_theta)
-                                    wx1 = ccx + woff_1 * numpy.cos(cs_theta)
-                                    wy1 = ccy + woff_1 * numpy.sin(cs_theta)
-                                    lw.append((wx0, wy0))
-                                    rw.append((wx1, wy1))
-                                    
-                                    if step == num_steps // 2:
-                                        mid_x1, mid_y1, mid_x2, mid_y2 = wx0, wy0, wx1, wy1
-                            
+
+                                fwhm_res = _fwhm_calib(t_prof)
+                                if fwhm_res is None:
+                                    continue
+                                cur_diam, sp0, sp1 = fwhm_res
+                                detectedDiameters.append(cur_diam)
+
+                                woff_0 = -track_L + sp0
+                                woff_1 = -track_L + sp1
+                                wx0 = ccx + woff_0 * numpy.cos(cs_theta)
+                                wy0 = ccy + woff_0 * numpy.sin(cs_theta)
+                                wx1 = ccx + woff_1 * numpy.cos(cs_theta)
+                                wy1 = ccy + woff_1 * numpy.sin(cs_theta)
+                                lw.append((wx0, wy0))
+                                rw.append((wx1, wy1))
+
+                                if step == num_steps // 2:
+                                    mid_x1, mid_y1, mid_x2, mid_y2 = wx0, wy0, wx1, wy1
+
                             if lw and rw:
                                 avg_diam = numpy.mean(detectedDiameters) if detectedDiameters else bestDiam
                                 mid_lw = lw[len(lw)//2]
@@ -843,7 +883,7 @@ if selectedDicom is not None:
                                 gy1 = mid_cy - (avg_diam/2.0) * numpy.sin(cs_theta)
                                 gx2 = mid_cx + (avg_diam/2.0) * numpy.cos(cs_theta)
                                 gy2 = mid_cy + (avg_diam/2.0) * numpy.sin(cs_theta)
-                                
+
                                 calibPoints.append({
                                     'ref': ((int(gx1), int(gy1)), (int(gx2), int(gy2))),
                                     'left_wall': lw,
