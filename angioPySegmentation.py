@@ -1133,11 +1133,6 @@ if selectedDicom is not None:
             sp_dy = numpy.gradient(sp_y)
 
             _mask_2d = numpy.any(predictedMask > 0, axis=-1)
-            # Erode by 1 px to compensate for UNet's systematic edge over-segmentation
-            # (calibration via gradient peaks is sharper than mask-based raycast ~+5 % bias).
-            _mask_2d = cv2.erode(_mask_2d.astype(numpy.uint8),
-                                 numpy.ones((3, 3), numpy.uint8),
-                                 iterations=1).astype(bool)
             _h, _w   = _mask_2d.shape
 
             def _raycast_1d(cx, cy, nx, ny, max_r=80):
