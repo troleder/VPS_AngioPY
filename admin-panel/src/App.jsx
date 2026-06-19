@@ -23,7 +23,10 @@ import {
   FolderSync,
   ChevronRight,
   UserCheck2,
-  Lock
+  Lock,
+  Database,
+  Search,
+  Trash2
 } from 'lucide-react';
 
 const API_BASE = '/api';
@@ -172,6 +175,7 @@ export default function App() {
           <TabButton id="sites" label="Przypisz Ośrodek" icon={<Building2 size={18} />} activeTab={activeTab} setActiveTab={setActiveTab} />
           <TabButton id="patients" label="Przypisz Pacjenta" icon={<UserCheck size={18} />} activeTab={activeTab} setActiveTab={setActiveTab} />
           <TabButton id="caching" label="Pobieranie plików (Cache)" icon={<HardDrive size={18} />} activeTab={activeTab} setActiveTab={setActiveTab} />
+          <TabButton id="cache_viewer" label="Stan Cache VPS" icon={<Database size={18} />} activeTab={activeTab} setActiveTab={setActiveTab} />
           <TabButton id="unassigned" label="Odpisane przypadki" icon={<AlertTriangle size={18} />} activeTab={activeTab} setActiveTab={setActiveTab} />
           <TabButton id="progress" label="Postęp analityków" icon={<BarChart3 size={18} />} activeTab={activeTab} setActiveTab={setActiveTab} />
           <TabButton id="analysts" label="Dodaj analityka" icon={<UserPlus size={18} />} activeTab={activeTab} setActiveTab={setActiveTab} />
@@ -241,6 +245,8 @@ function TabContent({ tab, token, user }) {
       return <PatientsTab token={token} user={user} />;
     case 'caching':
       return <CachingTab token={token} />;
+    case 'cache_viewer':
+      return <CacheViewerTab token={token} />;
     case 'unassigned':
       return <UnassignedTab token={token} user={user} />;
     case 'progress':
@@ -1420,6 +1426,227 @@ function TabError({ error, retry }) {
         <button onClick={retry} className="btn-secondary" style={{ maxWidth: '160px', padding: '8px 16px', fontSize: '12px' }}>
           Spróbuj ponownie
         </button>
+      )}
+    </div>
+  );
+}
+
+// --- Tab 9: Cache Viewer ---
+function CacheViewerTab({ token }) {
+  const [cacheData, setCacheData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [deletingId, setDeletingId] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const fetchCacheData = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/cache/files`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('Nie udało się pobrać informacji o cache');
+      const data = await res.json();
+      setCacheData(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchCacheData();
+  }, [token]);
+
+  const handleDeleteCache = async (site, patientId) => {
+    setDeletingId(patientId);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/cache/files/${site}/${patientId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || 'Błąd podczas usuwania cache');
+      }
+      setConfirmDelete(null);
+      await fetchCacheData();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const formatDate = (timestamp) => {
+    if (!timestamp) return 'N/A';
+    const date = new Date(timestamp * 1000);
+    return date.toLocaleString('pl-PL', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
+  if (loading && !cacheData) return <TabLoader />;
+  if (error && !cacheData) return <TabError error={error} retry={fetchCacheData} />;
+
+  const filteredPatients = cacheData?.patients?.filter(p => 
+    p.patient_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    p.site.toLowerCase().includes(searchQuery.toLowerCase())
+  ) || [];
+
+  return (
+    <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      <div>
+        <h2 style={{ fontSize: '28px', fontWeight: '700', letterSpacing: '-0.5px' }}>💾 Stan Cache VPS (Cached Patients)</h2>
+        <p style={{ color: '#888', marginTop: '4px' }}>Przeglądaj pacjentów aktualnie zapisanych w pamięci podręcznej serwera VPS oraz zarządzaj miejscem na dysku</p>
+      </div>
+
+      {error && (
+        <div style={{ display: 'flex', gap: '8px', padding: '12px', borderRadius: '8px', backgroundColor: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#ef4444', fontSize: '14px' }}>
+          <AlertCircle size={18} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
+        <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <span style={{ fontSize: '14px', color: '#888', fontWeight: '500' }}>Całkowity Rozmiar Cache</span>
+          <span style={{ fontSize: '32px', fontWeight: '700', color: '#00ff00' }}>
+            {cacheData ? `${cacheData.total_size_mb >= 1024 ? (cacheData.total_size_mb / 1024).toFixed(2) + ' GB' : cacheData.total_size_mb + ' MB'}` : '0 MB'}
+          </span>
+        </div>
+        <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <span style={{ fontSize: '14px', color: '#888', fontWeight: '500' }}>Zapisani Pacjenci</span>
+          <span style={{ fontSize: '32px', fontWeight: '700', color: '#fff' }}>
+            {cacheData?.total_patients || 0}
+          </span>
+        </div>
+        <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <span style={{ fontSize: '14px', color: '#888', fontWeight: '500' }}>Lokalizacja na VPS</span>
+          <span style={{ fontSize: '14px', fontWeight: '600', color: '#aaa', wordBreak: 'break-all', marginTop: 'auto' }}>
+            ./tailscale_cache
+          </span>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: '16px', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: '240px', maxWidth: '400px' }}>
+          <Search size={18} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#666' }} />
+          <input 
+            type="text" 
+            placeholder="Szukaj po ID pacjenta lub ośrodku..." 
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            style={{ width: '100%', padding: '10px 12px 10px 40px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'rgba(255,255,255,0.02)', color: '#fff' }}
+          />
+        </div>
+        <button onClick={fetchCacheData} className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px' }}>
+          <RefreshCw size={16} />
+          Odśwież
+        </button>
+      </div>
+
+      {confirmDelete && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999, padding: '20px' }}>
+          <div className="glass-card fade-in" style={{ maxWidth: '480px', width: '100%', display: 'flex', flexDirection: 'column', gap: '20px', border: '1px solid rgba(239,68,68,0.2)' }}>
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+              <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: 'rgba(239,68,68,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ef4444', flexShrink: 0 }}>
+                <AlertTriangle size={24} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: '18px', fontWeight: '700', color: '#fff' }}>Potwierdź usunięcie z cache</h3>
+                <p style={{ color: '#aaa', fontSize: '14px', marginTop: '6px', lineHeight: '1.5' }}>
+                  Czy na pewno chcesz usunąć pliki z cache dla pacjenta <strong style={{ color: '#fff' }}>{confirmDelete.patient_id}</strong> (Ośrodek {confirmDelete.site})?
+                  Pliki te zostaną usunięte z lokalnego dysku serwera VPS. Będą musiały zostać pobrane ponownie z Tailscale przed rozpoczęciem analizy.
+                </p>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end', marginTop: '8px' }}>
+              <button 
+                onClick={() => setConfirmDelete(null)} 
+                className="btn-secondary" 
+                disabled={deletingId !== null}
+                style={{ padding: '8px 16px' }}
+              >
+                Anuluj
+              </button>
+              <button 
+                onClick={() => handleDeleteCache(confirmDelete.site, confirmDelete.patient_id)} 
+                disabled={deletingId !== null}
+                style={{ backgroundColor: '#ef4444', color: '#fff', border: 'none', borderRadius: '6px', padding: '8px 16px', fontWeight: '600', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+              >
+                {deletingId === confirmDelete.patient_id ? (
+                  <>
+                    <Loader2 className="spin" size={16} />
+                    Usuwanie...
+                  </>
+                ) : (
+                  'Usuń z cache'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {filteredPatients.length === 0 ? (
+        <div className="glass-card" style={{ borderLeft: '4px solid #ef4444' }}>
+          <p style={{ color: '#aaa', fontSize: '15px' }}>
+            {searchQuery ? 'Brak dopasowań dla podanych kryteriów wyszukiwania.' : 'Brak zapisanych pacjentów w cache.'}
+          </p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {filteredPatients.map(p => (
+            <div 
+              key={`${p.site}_${p.patient_id}`} 
+              className="glass-card fade-in" 
+              style={{ display: 'flex', flexWrap: 'wrap', gap: '20px', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', transition: 'transform 0.2s, background-color 0.2s' }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '200px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '16px', fontWeight: '700', color: '#fff' }}>📁 Pacjent {p.patient_id}</span>
+                  <span style={{ fontSize: '12px', fontWeight: '600', padding: '2px 8px', borderRadius: '12px', backgroundColor: 'rgba(255,255,255,0.05)', color: '#aaa' }}>
+                    Ośrodek {p.site}
+                  </span>
+                  {p.is_complete ? (
+                    <span style={{ fontSize: '11px', fontWeight: '600', padding: '2px 8px', borderRadius: '12px', backgroundColor: 'rgba(0,255,0,0.1)', color: '#00ff00', border: '1px solid rgba(0,255,0,0.2)' }}>
+                      Kompletny 🟢
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: '11px', fontWeight: '600', padding: '2px 8px', borderRadius: '12px', backgroundColor: 'rgba(245,158,11,0.1)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.2)' }}>
+                      Częściowy 🟡
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: '16px', fontSize: '13px', color: '#888', marginTop: '4px' }}>
+                  <span>Rozmiar: <strong style={{ color: '#aaa' }}>{p.size_mb >= 1024 ? (p.size_mb / 1024).toFixed(2) + ' GB' : p.size_mb + ' MB'}</strong></span>
+                  <span>Pliki: <strong style={{ color: '#aaa' }}>{p.file_count}</strong></span>
+                  <span>Data cache: <strong style={{ color: '#aaa' }}>{formatDate(p.cached_at)}</strong></span>
+                </div>
+              </div>
+
+              <div>
+                <button 
+                  onClick={() => setConfirmDelete(p)}
+                  className="btn-secondary"
+                  style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.2)', backgroundColor: 'rgba(239,68,68,0.02)', padding: '8px 12px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Trash2 size={16} />
+                  Zwolnij
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

@@ -1177,6 +1177,96 @@ async def bulk_import_reports(
         "results": results
     }
 
+@app.get("/api/cache/files")
+def list_cached_files(user: dict = Depends(get_admin_user)):
+    cache_dir = "./tailscale_cache"
+    if not os.path.exists(cache_dir):
+        return {"total_size_bytes": 0, "total_size_mb": 0, "total_patients": 0, "patients": []}
+        
+    patients = []
+    total_size_bytes = 0
+    
+    try:
+        for site in os.listdir(cache_dir):
+            site_path = os.path.join(cache_dir, site)
+            if not os.path.isdir(site_path) or site.startswith("."):
+                continue
+                
+            for patient in os.listdir(site_path):
+                patient_path = os.path.join(site_path, patient)
+                if not os.path.isdir(patient_path) or patient.startswith("."):
+                    continue
+                    
+                patient_size = 0
+                file_count = 0
+                is_complete = os.path.exists(os.path.join(patient_path, ".cache_complete"))
+                
+                for root, dirs, files in os.walk(patient_path):
+                    for file in files:
+                        if file.startswith("."):
+                            continue
+                        file_path = os.path.join(root, file)
+                        try:
+                            f_size = os.path.getsize(file_path)
+                            patient_size += f_size
+                            file_count += 1
+                        except:
+                            pass
+                            
+                try:
+                    mtime = os.path.getmtime(patient_path)
+                except:
+                    mtime = time.time()
+                    
+                total_size_bytes += patient_size
+                patients.append({
+                    "patient_id": patient,
+                    "site": site,
+                    "file_count": file_count,
+                    "size_bytes": patient_size,
+                    "size_mb": round(patient_size / (1024 * 1024), 2),
+                    "is_complete": is_complete,
+                    "cached_at": mtime
+                })
+                
+        patients.sort(key=lambda x: x["cached_at"], reverse=True)
+        return {
+            "total_size_bytes": total_size_bytes,
+            "total_size_mb": round(total_size_bytes / (1024 * 1024), 2),
+            "total_patients": len(patients),
+            "patients": patients
+        }
+    except Exception as e:
+        logger.error(f"Error scanning cached files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/cache/files/{site}/{patient_id}")
+def delete_patient_cache(site: str, patient_id: str, user: dict = Depends(get_admin_user)):
+    if not re.match(r"^[a-zA-Z0-9_-]+$", site) or not re.match(r"^\d{4}-\d{4}$", patient_id):
+        raise HTTPException(status_code=400, detail="Invalid site or patient ID format")
+        
+    patient_dir = os.path.abspath(os.path.join("./tailscale_cache", site, patient_id))
+    cache_dir_abs = os.path.abspath("./tailscale_cache")
+    if not patient_dir.startswith(cache_dir_abs):
+        raise HTTPException(status_code=400, detail="Access denied")
+        
+    if not os.path.exists(patient_dir):
+        raise HTTPException(status_code=404, detail="Patient cache directory not found")
+        
+    try:
+        shutil.rmtree(patient_dir)
+        site_dir = os.path.dirname(patient_dir)
+        if os.path.exists(site_dir) and not os.listdir(site_dir):
+            os.rmdir(site_dir)
+            
+        global _sizes_cache
+        _sizes_cache = {}
+        
+        return {"status": "success", "message": f"Successfully deleted cache for patient {patient_id}"}
+    except Exception as e:
+        logger.error(f"Error deleting cache for patient {patient_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/refresh")
 def force_refresh_caches(user: dict = Depends(get_admin_user)):
     global _patients_cache, _sizes_cache
