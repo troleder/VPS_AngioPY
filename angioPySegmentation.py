@@ -3791,10 +3791,7 @@ with st.sidebar:
                 st.session_state.app_mode = selected_mode
                 st.rerun()
             
-        # If the user is an admin, let them manage other analysts
-        if st.session_state.user.get("role") == "admin" and firebase_available:
-            with st.expander("👥 Analyst Management"):
-                render_analyst_management()
+        # Analyst Management has been moved to the decoupled HTML/JS Admin Panel.
                 
         # Analyst Unassign Form
         active_pid = st.session_state.get("patient_id", "").strip()
@@ -4811,7 +4808,26 @@ def render_dicom_card(name, path, key_idx):
 
 # ── Admin Dashboard Routing ───────────────────────────────────────────────────
 if st.session_state.get("app_mode") == "👑 Admin Panel" and st.session_state.user.get("role") == "admin":
-    render_admin_panel()
+    st.markdown("<h1 style='color: #00ff00; font-family: Outfit, sans-serif;'>👑 Admin Panel</h1>", unsafe_allow_html=True)
+    st.info("Panel Administratora został przeniesiony do dedykowanej, wysoce wydajnej aplikacji HTML/JS.")
+    st.markdown("""
+        <a href="/admin/" target="_self">
+            <button style="
+                background-color: #00ff00;
+                color: black;
+                border: none;
+                border-radius: 8px;
+                padding: 12px 24px;
+                font-weight: 600;
+                font-size: 15px;
+                cursor: pointer;
+                box-shadow: 0 4px 14px 0 rgba(0, 255, 0, 0.3);
+                transition: all 0.2s;
+            " onmouseover="this.style.backgroundColor='#2eff2e'" onmouseout="this.style.backgroundColor='#00ff00'">
+                🚀 Otwórz nowy Panel Administratora
+            </button>
+        </a>
+    """, unsafe_allow_html=True)
     st.stop()
 elif st.session_state.get("app_mode") == "📊 My Statistics":
     render_analyst_stats_panel()

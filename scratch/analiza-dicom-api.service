@@ -1,0 +1,16 @@
+[Unit]
+Description=AngioPy Admin API Backend Service
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/analiza-dicom
+Environment=PYTHONPATH=/var/www/analiza-dicom
+Environment=HOME=/var/www/analiza-dicom
+ExecStart=/var/www/analiza-dicom/.venv/bin/uvicorn admin_api:app --host 127.0.0.1 --port 8000 --workers 2 --log-level info
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

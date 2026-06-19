@@ -1,5 +1,5 @@
 #!/bin/bash
-# deploy.sh - Automates Git push, VPS pull, and service restarts for AngioPy
+# deploy.sh - Automates React build, Git push, VPS pull, Nginx configuration, and service restarts for AngioPy
 
 # Exit immediately if any command fails
 set -e
@@ -18,23 +18,39 @@ fi
 
 COMMIT_MSG="$1"
 
-echo "=== 1. Staging and committing changes locally ==="
+echo "=== 1. Building React Admin Panel locally ==="
+cd admin-panel
+npm run build
+cd ..
+rm -rf admin-dist
+cp -R admin-panel/dist admin-dist
+
+echo "=== 2. Staging and committing changes locally ==="
 git add .
 git commit -m "$COMMIT_MSG" || echo "No changes to commit."
 
-echo "=== 2. Pushing changes to GitHub ==="
+echo "=== 3. Pushing changes to GitHub ==="
 git push origin master
 
-echo "=== 3. Pulling changes on VPS ==="
+echo "=== 4. Pulling changes on VPS ==="
 ssh ${VPS_USER}@${VPS_IP} "cd ${VPS_PATH} && git pull origin master"
 
-echo "=== 4. Setting correct file ownership on VPS ==="
+echo "=== 5. Installing pip dependencies on VPS ==="
+ssh ${VPS_USER}@${VPS_IP} "cd ${VPS_PATH} && .venv/bin/pip install fastapi uvicorn python-multipart"
+
+echo "=== 6. Setting up systemd Admin API service on VPS ==="
+ssh ${VPS_USER}@${VPS_IP} "cp ${VPS_PATH}/scratch/analiza-dicom-api.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable analiza-dicom-api"
+
+echo "=== 7. Patches and restarts Nginx config ==="
+ssh ${VPS_USER}@${VPS_IP} "python3 ${VPS_PATH}/scratch/patch_nginx.py && systemctl restart nginx"
+
+echo "=== 8. Setting correct file ownership on VPS ==="
 ssh ${VPS_USER}@${VPS_IP} "chown -R www-data:www-data ${VPS_PATH} && chmod -R 775 ${VPS_PATH}/local_cache ${VPS_PATH}/ecrf_data ${VPS_PATH}/reports 2>/dev/null || true"
 
-echo "=== 5. Restarting Streamlit services on VPS ==="
-ssh ${VPS_USER}@${VPS_IP} "systemctl restart analiza-dicom@8501 analiza-dicom@8502 analiza-dicom@8503 analiza-dicom@8504"
+echo "=== 9. Restarting all services on VPS ==="
+ssh ${VPS_USER}@${VPS_IP} "systemctl restart analiza-dicom-api analiza-dicom@8501 analiza-dicom@8502 analiza-dicom@8503 analiza-dicom@8504"
 
-echo "=== 6. Verifying service states ==="
-ssh ${VPS_USER}@${VPS_IP} "systemctl is-active analiza-dicom@8501 analiza-dicom@8502 analiza-dicom@8503 analiza-dicom@8504"
+echo "=== 10. Verifying service states ==="
+ssh ${VPS_USER}@${VPS_IP} "systemctl is-active analiza-dicom-api analiza-dicom@8501 analiza-dicom@8502 analiza-dicom@8503 analiza-dicom@8504"
 
 echo "🎉 Deployment completed successfully and services restarted!"
