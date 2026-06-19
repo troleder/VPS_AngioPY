@@ -635,6 +635,7 @@ function CachingTab({ token }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  const [startingCache, setStartingCache] = useState(false);
 
   const fetchInitialData = async () => {
     setLoading(true);
@@ -726,9 +727,10 @@ function CachingTab({ token }) {
   }, [selectedTarget, scope]);
 
   const handleStartCache = async () => {
-    if (!selectedTarget || !confirmAccept) return;
+    if (!selectedTarget || !confirmAccept || startingCache) return;
     setError(null);
     setSuccess(null);
+    setStartingCache(true);
     try {
       const res = await fetch(`${API_BASE}/cache/prefetch`, {
         method: 'POST',
@@ -750,6 +752,8 @@ function CachingTab({ token }) {
       fetchTasks();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setStartingCache(false);
     }
   };
 
@@ -969,8 +973,8 @@ function CachingTab({ token }) {
                   <span>Potwierdzam chęć wgrania powyższych aktywnych przypadków do pamięci VPS</span>
                 </label>
 
-                <button onClick={handleStartCache} className="btn-primary" disabled={!confirmAccept} style={{ maxWidth: '340px' }}>
-                  <FolderSync size={18} /> Uruchom pobieranie (ANGIO folders only)
+                <button onClick={handleStartCache} className="btn-primary" disabled={!confirmAccept || startingCache} style={{ maxWidth: '340px' }}>
+                  {startingCache ? <Loader2 className="spin" size={18} /> : <FolderSync size={18} />} Uruchom pobieranie (ANGIO folders only)
                 </button>
               </div>
             )}
