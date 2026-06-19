@@ -190,6 +190,32 @@ def skelSplinerWithThickness(skel, EDT, smoothing=50, order=3, decimation=2):
     return tcko
 
 
+_MODEL_CACHE = {}
+
+def get_segmentation_model(model_weights_path, device, n_classes):
+    cache_key = (model_weights_path, str(device), n_classes)
+    if cache_key in _MODEL_CACHE:
+        return _MODEL_CACHE[cache_key]
+    
+    net = predict.smp.Unet(
+        encoder_name='inceptionresnetv2',
+        encoder_weights=None,
+        in_channels=3,
+        classes=n_classes
+    )
+    net = predict.nn.DataParallel(net)
+    net.to(device=device)
+    net.load_state_dict(
+        predict.torch.load(
+            model_weights_path,
+            map_location=device
+        )
+    )
+    net.eval()
+    _MODEL_CACHE[cache_key] = net
+    return net
+
+
 def arterySegmentation(inputImage, groundTruthPoints, segmentationModelWeights=None):
     """
     Segment a single greyscale artery with a UNet model.
@@ -214,10 +240,15 @@ def arterySegmentation(inputImage, groundTruthPoints, segmentationModelWeights=N
             Mask selecting the selected artery, 0 = background and 1 = artery
     """
     if segmentationModelWeights is None:
-        segmentationModelWeights = pooch.retrieve(
-            url="doi:10.5281/zenodo.13848135/modelWeights-InternalData-inceptionresnetv2-fold2-e40-b10-a4.pth",
-            known_hash="md5:bf893ef57adaf39cfee33b25c7c1d87b",
-        )
+        import os
+        local_path = os.path.join(os.path.dirname(__file__), "modelWeights-InternalData-inceptionresnetv2-fold2-e40-b10-a4.pth")
+        if os.path.exists(local_path):
+            segmentationModelWeights = local_path
+        else:
+            segmentationModelWeights = pooch.retrieve(
+                url="doi:10.5281/zenodo.13848135/modelWeights-InternalData-inceptionresnetv2-fold2-e40-b10-a4.pth",
+                known_hash="md5:bf893ef57adaf39cfee33b25c7c1d87b",
+            )
 
     if inputImage.shape[0] != 512 and inputImage.shape[1] != 512:
         ratioYX = numpy.array([512./inputImage.shape[0], 512./inputImage.shape[1]])
@@ -232,29 +263,14 @@ def arterySegmentation(inputImage, groundTruthPoints, segmentationModelWeights=N
 
     n_classes = 2 # binary output
 
-    net = predict.smp.Unet(
-        encoder_name='inceptionresnetv2',
-        encoder_weights="imagenet",
-        in_channels=3,
-        classes=n_classes
-    )
-
-    net = predict.nn.DataParallel(net)
-
     if predict.torch.cuda.is_available():
         device = predict.torch.device('cuda')
     elif predict.torch.backends.mps.is_available():
         device = predict.torch.device('mps')
     else:
         device = predict.torch.device('cpu')
-    net.to(device=device)
 
-    net.load_state_dict(
-        predict.torch.load(
-            segmentationModelWeights,
-            map_location=device
-        )
-    )
+    net = get_segmentation_model(segmentationModelWeights, device, n_classes)
 
     orig_image = Image.fromarray(inputImage)
 

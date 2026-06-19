@@ -5,3 +5,15 @@ utils/__pycache__/
 *.pth
 Dicom/
 google_credentials.json
+*credentials.json
+Google Credentials/
+.venv/
+local_cache/
+tailscale_cache/
+ecrf_data/
+reports/
+*.xlsx
+.agents/
+.vscode/
+.claude/
+.gemini/

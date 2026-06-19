@@ -3,6 +3,10 @@ import logging
 import os
 
 import torch
+# Limit PyTorch to a single thread to prevent CPU pinning (which freezes Streamlit heartbeats)
+# and to avoid high memory/CPU usage on shared VPS environments.
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
 import torch.nn as nn
 from PIL import Image
 from torchvision import transforms
