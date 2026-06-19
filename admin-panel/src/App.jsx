@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   signInWithEmailAndPassword, 
-  onAuthStateChanged, 
+  onIdTokenChanged, 
   signOut 
 } from 'firebase/auth';
 import { auth } from './firebase';
@@ -45,7 +45,7 @@ export default function App() {
 
   // Monitor Firebase Auth changes
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    const unsubscribe = onIdTokenChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         // Verify user email matches admin criteria
         const email = firebaseUser.email.toLowerCase();

@@ -141,7 +141,7 @@ class DiskSyncedActiveTasks:
                         is_running = data.get("status") == "running"
                         recent = (time.time() - mtime) < 3600  # 1 hour limit
                         if is_running:
-                            if (time.time() - mtime) < 300:
+                            if (time.time() - mtime) < 1800:
                                 tasks[tid] = data
                             else:
                                 data["status"] = "error"
@@ -491,33 +491,39 @@ def _prefetch_cases_worker(cases: List[dict], task_id: str):
             
         copied_bytes = 0
         start_time = time.time()
+        last_write_time = 0
         
         for idx, (src_fp, dst_fp, sz) in enumerate(files_to_copy):
             os.makedirs(os.path.dirname(dst_fp), exist_ok=True)
             robust_copy(src_fp, dst_fp)
             copied_bytes += sz
             
-            elapsed = time.time() - start_time
-            speed_mb = 0.0
-            if elapsed > 0:
-                speed_mb = (copied_bytes / (1024 * 1024)) / elapsed
-                
-            est_left = 0.0
-            if copied_bytes > 0:
-                bytes_left = total_size_bytes - copied_bytes
-                est_left = bytes_left / (copied_bytes / elapsed)
-                
-            with _copy_tasks_lock:
-                _active_copy_tasks.set_task(task_id, {
-                    "status": "running",
-                    "copied_files": idx + 1,
-                    "total_files": total_files,
-                    "copied_bytes": copied_bytes,
-                    "total_bytes": total_size_bytes,
-                    "speed": speed_mb,
-                    "est_left": est_left,
-                    "start_time": start_time
-                })
+            now = time.time()
+            elapsed = now - start_time
+            
+            is_last = (idx + 1 == total_files)
+            if is_last or (now - last_write_time) >= 1.5:
+                last_write_time = now
+                speed_mb = 0.0
+                if elapsed > 0:
+                    speed_mb = (copied_bytes / (1024 * 1024)) / elapsed
+                    
+                est_left = 0.0
+                if copied_bytes > 0:
+                    bytes_left = total_size_bytes - copied_bytes
+                    est_left = bytes_left / (copied_bytes / elapsed)
+                    
+                with _copy_tasks_lock:
+                    _active_copy_tasks.set_task(task_id, {
+                        "status": "running",
+                        "copied_files": idx + 1,
+                        "total_files": total_files,
+                        "copied_bytes": copied_bytes,
+                        "total_bytes": total_size_bytes,
+                        "speed": speed_mb,
+                        "est_left": est_left,
+                        "start_time": start_time
+                    })
                 
         for _, dst_abs in case_folders:
             try:
