@@ -184,7 +184,7 @@ export default function App() {
 
         <div style={{ padding: '16px', borderTop: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div style={{ width: '36px', height: '36px', borderRadius: '50%', backgroundColor: 'rgba(255, 255, 255, 0.05)', display: 'flex', alignItems: 'center', justifyCentent: 'center', color: '#aaa', flexShrink: 0 }}>
+            <div style={{ width: '36px', height: '36px', borderRadius: '50%', backgroundColor: 'rgba(255, 255, 255, 0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#aaa', flexShrink: 0 }}>
               <User size={18} style={{ marginLeft: '9px' }} />
             </div>
             <div style={{ overflow: 'hidden' }}>
@@ -296,7 +296,7 @@ function DashboardTab({ token }) {
 
   return (
     <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      <div style={{ display: 'flex', justifyCentent: 'space-between', alignItems: 'center' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2 style={{ fontSize: '28px', fontWeight: '700', letterSpacing: '-0.5px' }}>📈 Statystyki bazy danych</h2>
           <p style={{ color: '#888', marginTop: '4px' }}>Ogólne wskaźniki i podsumowanie analiz</p>
@@ -810,7 +810,7 @@ function CachingTab({ token }) {
             
             return (
               <div key={tid} className="glass-card fade-in" style={{ borderLeft: task.status === 'success' ? '4px solid #00ff00' : task.status === 'error' ? '4px solid #ef4444' : '4px solid #f59e0b' }}>
-                <div style={{ display: 'flex', justifyCentent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
                   <div>
                     <h4 style={{ fontWeight: '600', color: '#fff', fontSize: '14px' }}>
                       {tid.includes('site') ? `Pobieranie Ośrodka: ${tid.split('_')[3]}` : `Pobieranie Pacjenta: ${tid.split('_')[3]}`}
@@ -832,14 +832,14 @@ function CachingTab({ token }) {
                       </p>
                     ) : (
                       <div>
-                        <div style={{ display: 'flex', justifyCentent: 'space-between', fontSize: '12px', color: '#aaa', marginBottom: '4px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#aaa', marginBottom: '4px' }}>
                           <span>Pobrano: {task.copied_files} / {task.total_files} plików ({progressPercent}%)</span>
                           <span>Prędkość: {task.speed.toFixed(1)} MB/s</span>
                         </div>
                         <div style={{ width: '100%', height: '8px', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: '4px', overflow: 'hidden', marginBottom: '4px' }}>
                           <div style={{ width: `${progressPercent}%`, height: '100%', backgroundColor: '#00ff00', borderRadius: '4px', boxShadow: '0 0 8px #00ff00' }}></div>
                         </div>
-                        <div style={{ display: 'flex', justifyCentent: 'space-between', fontSize: '11px', color: '#666' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#666' }}>
                           <span>Wielkość: {(task.copied_bytes / (1024*1024)).toFixed(1)} MB / {(task.total_bytes / (1024*1024)).toFixed(1)} MB</span>
                           <span>Pozostały czas: {task.est_left > 0 ? `${(task.est_left / 60).toFixed(1)} min` : 'wyliczanie...'}</span>
                         </div>
@@ -1062,7 +1062,7 @@ function UnassignedTab({ token, user }) {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {unassigned.map(u => (
-            <div key={u.patient_id} className="glass-card fade-in" style={{ display: 'flex', flexWrap: 'wrap', gap: '24px', alignItems: 'center', justifyCentent: 'space-between', borderLeft: '4px solid #ef4444' }}>
+            <div key={u.patient_id} className="glass-card fade-in" style={{ display: 'flex', flexWrap: 'wrap', gap: '24px', alignItems: 'center', justifyContent: 'space-between', borderLeft: '4px solid #ef4444' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1, minWidth: '240px' }}>
                 <h4 style={{ fontWeight: '700', fontSize: '16px', color: '#fff' }}>📁 Pacjent {u.patient_id} (Ośrodek {u.site})</h4>
                 <p style={{ fontSize: '13px', color: '#888' }}>
@@ -1140,7 +1140,7 @@ function ProgressTab({ token }) {
           
           return (
             <div key={a.username} className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div style={{ display: 'flex', flexWrap: 'wrap', justifyCentent: 'space-between', alignItems: 'center', gap: '16px' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '16px' }}>
                 <div>
                   <h3 style={{ fontSize: '18px', fontWeight: '700', color: '#fff' }}>👤 {a.name}</h3>
                   <p style={{ fontSize: '13px', color: '#888' }}>{a.email}</p>
@@ -1153,7 +1153,7 @@ function ProgressTab({ token }) {
 
               {/* Progress bar */}
               <div>
-                <div style={{ display: 'flex', justifyCentent: 'space-between', fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
                   <span>Postęp przypisanych zadań</span>
                   <span>{pct.toFixed(1)}%</span>
                 </div>
@@ -1179,7 +1179,7 @@ function ProgressTab({ token }) {
                       <p style={{ color: '#666', fontSize: '13px', paddingLeft: '8px' }}>Brak zadań.</p>
                     ) : (
                       a.tasks.map((t, idx) => (
-                        <div key={idx} style={{ display: 'flex', justifyCentent: 'space-between', alignItems: 'center', padding: '10px 12px', borderRadius: '8px', backgroundColor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.03)' }}>
+                        <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', borderRadius: '8px', backgroundColor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.03)' }}>
                           {t.type === 'site' ? (
                             <>
                               <span style={{ fontSize: '13.5px', fontWeight: '600' }}>🏢 Ośrodek {t.site} (w całości)</span>
@@ -1429,7 +1429,7 @@ function ImportTab({ token }) {
           <h3 style={{ fontSize: '15px', fontWeight: '600' }}>Logi importu:</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '200px', overflowY: 'auto' }}>
             {importLogs.map((log, idx) => (
-              <div key={idx} style={{ fontSize: '13px', display: 'flex', justifyCentent: 'space-between', color: log.status === 'success' ? '#00ff00' : '#ef4444' }}>
+              <div key={idx} style={{ fontSize: '13px', display: 'flex', justifyContent: 'space-between', color: log.status === 'success' ? '#00ff00' : '#ef4444' }}>
                 <span>• {log.filename}</span>
                 <span>{log.status === 'success' ? '🟢 OK' : `❌ ${log.error || 'Błąd'}`}</span>
               </div>

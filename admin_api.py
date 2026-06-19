@@ -669,7 +669,11 @@ def get_metrics(user: dict = Depends(get_admin_user)):
     try:
         completed_reports = [doc.to_dict() for doc in db.collection("analysis_results").stream()]
         assignments = [doc.to_dict() for doc in db.collection("assignments").stream()]
-        site_assignments = [doc.to_dict() for doc in db.collection("site_assignments").stream()]
+        site_assignments = []
+        for doc in db.collection("site_assignments").stream():
+            d = doc.to_dict()
+            d["site"] = doc.id
+            site_assignments.append(d)
         
         completed_pids = {r.get("patient_id") for r in completed_reports if r.get("patient_id") and r.get("phase") == "COMPLETED"}
         
@@ -949,7 +953,11 @@ def get_analysts_progress(user: dict = Depends(get_admin_user)):
         completed_pids = {r.get("patient_id") for r in completed_reports if r.get("patient_id") and r.get("phase") == "COMPLETED"}
         
         assignments = [doc.to_dict() for doc in db.collection("assignments").stream()]
-        site_assignments = [doc.to_dict() for doc in db.collection("site_assignments").stream()]
+        site_assignments = []
+        for doc in db.collection("site_assignments").stream():
+            d = doc.to_dict()
+            d["site"] = doc.id
+            site_assignments.append(d)
         
         all_patients = get_scanned_patients_cached()
         
