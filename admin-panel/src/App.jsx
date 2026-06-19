@@ -653,8 +653,7 @@ function CachingTab({ token }) {
       
       // Auto-select first option
       if (scope === 'site') {
-        const assignedSites = dataSites.filter(s => s.status === 'assigned_full' || s.status === 'assigned_partial');
-        if (assignedSites.length > 0) setSelectedTarget(assignedSites[0].site);
+        if (dataSites.length > 0) setSelectedTarget(dataSites[0].site);
       } else {
         const assignedPatients = [];
         dataAnalysts.forEach(a => {
@@ -878,14 +877,16 @@ function CachingTab({ token }) {
 
         {scope === 'site' ? (
           <div>
-            <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', marginBottom: '8px', color: '#aaa' }}>Wybierz przypisany ośrodek</label>
-            {assignedSites.length === 0 ? (
-              <p style={{ color: '#888', fontSize: '13px' }}>Brak przypisanych ośrodków w bazie.</p>
+            <label style={{ display: 'block', fontSize: '14px', fontWeight: '500', marginBottom: '8px', color: '#aaa' }}>Wybierz ośrodek (z serwera Tailscale)</label>
+            {sites.length === 0 ? (
+              <p style={{ color: '#888', fontSize: '13px' }}>Brak ośrodków na serwerze Tailscale.</p>
             ) : (
               <select value={selectedTarget} onChange={e => setSelectedTarget(e.target.value)} style={{ maxWidth: '400px' }}>
                 <option value="" disabled>-- Wybierz Ośrodek --</option>
-                {assignedSites.map(s => (
-                  <option key={s.site} value={s.site}>Ośrodek {s.site}</option>
+                {sites.map(s => (
+                  <option key={s.site} value={s.site}>
+                    Ośrodek {s.site} {s.status === 'unassigned' ? '(Nieprzypisany)' : ''}
+                  </option>
                 ))}
               </select>
             )}
