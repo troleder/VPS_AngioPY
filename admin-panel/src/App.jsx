@@ -914,17 +914,49 @@ function CachingTab({ token }) {
 
         {estimateData && (
           <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '16px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '16px' }}>
-            <div style={{ padding: '12px', borderRadius: '8px', backgroundColor: 'rgba(0, 255, 0, 0.05)', border: '1px solid rgba(0,255,0,0.1)' }}>
-              <p style={{ fontSize: '14px' }}>
-                📦 Szacowana wielkość plików do wgrania: <strong style={{ color: '#00ff00' }}>{estimateData.size_gb.toFixed(2)} GB</strong>
-              </p>
+            <div style={{ padding: '16px', borderRadius: '12px', backgroundColor: 'rgba(255, 255, 255, 0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
+              <h4 style={{ fontWeight: '600', color: '#fff', fontSize: '14px', marginBottom: '12px' }}>Podsumowanie statusu pacjentów:</h4>
+              
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '12px', marginBottom: '16px' }}>
+                <div style={{ padding: '10px', borderRadius: '8px', backgroundColor: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.03)' }}>
+                  <div style={{ fontSize: '11px', color: '#888' }}>Wszystkich spraw</div>
+                  <div style={{ fontSize: '18px', fontWeight: '700', color: '#fff', marginTop: '2px' }}>{estimateData.total_patients}</div>
+                </div>
+                <div style={{ padding: '10px', borderRadius: '8px', backgroundColor: 'rgba(0, 255, 0, 0.02)', border: '1px solid rgba(0,255,0,0.05)' }}>
+                  <div style={{ fontSize: '11px', color: '#888' }}>W cache VPS 💾</div>
+                  <div style={{ fontSize: '18px', fontWeight: '700', color: '#00ff00', marginTop: '2px' }}>{estimateData.cached_patients?.length || 0}</div>
+                </div>
+                <div style={{ padding: '10px', borderRadius: '8px', backgroundColor: 'rgba(59, 130, 246, 0.02)', border: '1px solid rgba(59,130,246,0.05)' }}>
+                  <div style={{ fontSize: '11px', color: '#888' }}>Zakończone 🟢</div>
+                  <div style={{ fontSize: '18px', fontWeight: '700', color: '#3b82f6', marginTop: '2px' }}>{estimateData.completed_patients?.length || 0}</div>
+                </div>
+                <div style={{ padding: '10px', borderRadius: '8px', backgroundColor: 'rgba(245, 158, 11, 0.02)', border: '1px solid rgba(245,158,11,0.05)' }}>
+                  <div style={{ fontSize: '11px', color: '#888' }}>Do pobrania 📥</div>
+                  <div style={{ fontSize: '18px', fontWeight: '700', color: '#f59e0b', marginTop: '2px' }}>{estimateData.scheduled_patients?.length || 0}</div>
+                </div>
+              </div>
+
               {estimateData.scheduled_patients.length > 0 ? (
-                <div style={{ marginTop: '8px' }}>
-                  <span style={{ fontSize: '12px', color: '#888' }}>Do pobrania pacjenci ({estimateData.scheduled_patients.length}):</span>
-                  <p style={{ fontSize: '13px', color: '#aaa', marginTop: '2px' }}>{estimateData.scheduled_patients.join(', ')}</p>
+                <div style={{ padding: '12px', borderRadius: '8px', backgroundColor: 'rgba(0, 255, 0, 0.04)', border: '1px solid rgba(0,255,0,0.1)' }}>
+                  <p style={{ fontSize: '14px', color: '#fff' }}>
+                    📦 Szacowana wielkość plików do wgrania: <strong style={{ color: '#00ff00' }}>{estimateData.size_gb.toFixed(2)} GB</strong>
+                  </p>
+                  <div style={{ marginTop: '8px' }}>
+                    <span style={{ fontSize: '12px', color: '#aaa' }}>Pacjenci zakwalifikowani do pobrania ({estimateData.scheduled_patients.length}):</span>
+                    <p style={{ fontSize: '13px', color: '#fff', fontWeight: '500', marginTop: '2px' }}>{estimateData.scheduled_patients.join(', ')}</p>
+                  </div>
                 </div>
               ) : (
-                <p style={{ fontSize: '13px', color: '#ef4444', marginTop: '6px' }}>Wszystkie przypadki są już kompletne w pamięci VPS.</p>
+                <div style={{ padding: '12px', borderRadius: '8px', backgroundColor: 'rgba(0, 255, 0, 0.04)', border: '1px solid rgba(0,255,0,0.1)' }}>
+                  <p style={{ fontSize: '13px', color: '#00ff00', fontWeight: '500' }}>
+                    Wszystkie aktywne (nieukończone) przypadki tego ośrodka są już zapisane w pamięci podręcznej VPS.
+                  </p>
+                  {estimateData.completed_patients?.length > 0 && (
+                    <p style={{ fontSize: '12px', color: '#888', marginTop: '4px' }}>
+                      Pozostałe {estimateData.completed_patients.length} przypadków zostało już ukończone (Completed) i nie wymagają pobierania.
+                    </p>
+                  )}
+                </div>
               )}
             </div>
 

@@ -638,10 +638,25 @@ def check_cache_status_and_heal(loc, base_dir="/mnt/dane_dicom/"):
         for r_loc in r_locs:
             src_abs = os.path.abspath(os.path.join(base_dir, r_loc))
             if os.path.exists(src_abs) and os.path.isdir(src_abs):
+                has_angio = False
+                try:
+                    for entry in os.scandir(src_abs):
+                        if entry.is_dir() and entry.name.upper() == "ANGIO":
+                            has_angio = True
+                            break
+                except:
+                    pass
+
                 for root, dirs, files in os.walk(src_abs):
                     for file in files:
                         if not file.startswith("."):
-                            source_files.append(os.path.join(root, file))
+                            src_fp = os.path.join(root, file)
+                            if has_angio:
+                                rel_to_patient = os.path.relpath(src_fp, src_abs)
+                                rel_parts_upper = [p.upper() for p in rel_to_patient.replace("\\", "/").split("/")]
+                                if "ANGIO" not in rel_parts_upper:
+                                    continue
+                            source_files.append(src_fp)
                             
         if not source_files:
             return False

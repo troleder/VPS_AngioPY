@@ -258,10 +258,25 @@ def check_cache_status_and_heal(loc, base_dir="/mnt/dane_dicom/"):
         for r_loc in r_locs:
             src_abs = os.path.abspath(os.path.join(base_dir, r_loc))
             if os.path.exists(src_abs) and os.path.isdir(src_abs):
+                has_angio = False
+                try:
+                    for entry in os.scandir(src_abs):
+                        if entry.is_dir() and entry.name.upper() == "ANGIO":
+                            has_angio = True
+                            break
+                except:
+                    pass
+
                 for root, dirs, files in os.walk(src_abs):
                     for file in files:
                         if not file.startswith("."):
-                            source_files.append(os.path.join(root, file))
+                            src_fp = os.path.join(root, file)
+                            if has_angio:
+                                rel_to_patient = os.path.relpath(src_fp, src_abs)
+                                rel_parts_upper = [p.upper() for p in rel_to_patient.replace("\\", "/").split("/")]
+                                if "ANGIO" not in rel_parts_upper:
+                                    continue
+                            source_files.append(src_fp)
         if not source_files:
             return False
         all_match = True
@@ -1012,17 +1027,38 @@ def estimate_cache_size(data: dict, user: dict = Depends(get_admin_user)):
         all_patients = get_scanned_patients_cached()
         
         target_patients = []
+        cached_patients = []
+        completed_skipped = []
+        total_pats_count = 0
+        
         if ctype == "site":
             site_pats = [p for p in all_patients if p["site"] == target]
+            total_pats_count = len(site_pats)
             for p in site_pats:
                 pid = p["patient_id"]
-                if pid not in completed_pids and not is_patient_cached(target, pid):
+                is_cached = is_patient_cached(target, pid)
+                is_completed = pid in completed_pids
+                
+                if is_cached:
+                    cached_patients.append(pid)
+                elif is_completed:
+                    completed_skipped.append(pid)
+                else:
                     target_patients.append(p)
         else:
             site = next((p["site"] for p in all_patients if p["patient_id"] == target), None)
-            if site and not is_patient_cached(site, target):
-                target_patients.append({"site": site, "patient_id": target})
+            if site:
+                total_pats_count = 1
+                is_cached = is_patient_cached(site, target)
+                is_completed = target in completed_pids
                 
+                if is_cached:
+                    cached_patients.append(target)
+                elif is_completed:
+                    completed_skipped.append(target)
+                else:
+                    target_patients.append({"site": site, "patient_id": target})
+                    
         total_bytes = 0
         for p in target_patients:
             total_bytes += get_estimated_size_cached(p["site"], p["patient_id"])
@@ -1031,6 +1067,9 @@ def estimate_cache_size(data: dict, user: dict = Depends(get_admin_user)):
         return {
             "size_bytes": total_bytes,
             "size_gb": size_gb,
+            "total_patients": total_pats_count,
+            "cached_patients": cached_patients,
+            "completed_patients": completed_skipped,
             "scheduled_patients": [p["patient_id"] for p in target_patients]
         }
     except Exception as e:
@@ -1060,7 +1099,7 @@ def trigger_prefetch(data: dict, user: dict = Depends(get_admin_user)):
         else:
             task_id = f"prefetch_admin_patient_{target}_{int(time.time())}"
             site = next((p["site"] for p in all_patients if p["patient_id"] == target), None)
-            if site and not is_patient_cached(site, target):
+            if site and not is_patient_cached(site, target) and target not in completed_pids:
                 target_patients.append({"site": site, "patient_id": target})
                 
         if not target_patients:
