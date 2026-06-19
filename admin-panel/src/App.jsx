@@ -1436,7 +1436,7 @@ function CacheViewerTab({ token }) {
   const [cacheData, setCacheData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedSite, setSelectedSite] = useState('all');
   const [deletingId, setDeletingId] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
 
@@ -1497,9 +1497,12 @@ function CacheViewerTab({ token }) {
   if (loading && !cacheData) return <TabLoader />;
   if (error && !cacheData) return <TabError error={error} retry={fetchCacheData} />;
 
+  const uniqueSites = cacheData?.patients 
+    ? Array.from(new Set(cacheData.patients.map(p => p.site))).sort()
+    : [];
+
   const filteredPatients = cacheData?.patients?.filter(p => 
-    p.patient_id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    p.site.toLowerCase().includes(searchQuery.toLowerCase())
+    selectedSite === 'all' || p.site === selectedSite
   ) || [];
 
   return (
@@ -1538,15 +1541,27 @@ function CacheViewerTab({ token }) {
       </div>
 
       <div style={{ display: 'flex', gap: '16px', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
-        <div style={{ position: 'relative', flex: 1, minWidth: '240px', maxWidth: '400px' }}>
-          <Search size={18} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#666' }} />
-          <input 
-            type="text" 
-            placeholder="Szukaj po ID pacjenta lub ośrodku..." 
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            style={{ width: '100%', padding: '10px 12px 10px 40px', borderRadius: '8px', border: '1px solid var(--border-color)', backgroundColor: 'rgba(255,255,255,0.02)', color: '#fff' }}
-          />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: '240px', maxWidth: '400px' }}>
+          <span style={{ fontSize: '14px', color: '#aaa', fontWeight: '500', whiteSpace: 'nowrap' }}>Filtruj według ośrodka:</span>
+          <select 
+            value={selectedSite}
+            onChange={e => setSelectedSite(e.target.value)}
+            style={{ 
+              flex: 1, 
+              padding: '10px 12px', 
+              borderRadius: '8px', 
+              border: '1px solid var(--border-color)', 
+              backgroundColor: 'rgba(255,255,255,0.02)', 
+              color: '#fff',
+              outline: 'none',
+              cursor: 'pointer'
+            }}
+          >
+            <option value="all">Wszystkie ośrodki</option>
+            {uniqueSites.map(site => (
+              <option key={site} value={site}>Ośrodek {site}</option>
+            ))}
+          </select>
         </div>
         <button onClick={fetchCacheData} className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px' }}>
           <RefreshCw size={16} />
@@ -1600,7 +1615,7 @@ function CacheViewerTab({ token }) {
       {filteredPatients.length === 0 ? (
         <div className="glass-card" style={{ borderLeft: '4px solid #ef4444' }}>
           <p style={{ color: '#aaa', fontSize: '15px' }}>
-            {searchQuery ? 'Brak dopasowań dla podanych kryteriów wyszukiwania.' : 'Brak zapisanych pacjentów w cache.'}
+            {selectedSite !== 'all' ? `Brak zapisanych pacjentów dla Ośrodka ${selectedSite} w cache.` : 'Brak zapisanych pacjentów w cache.'}
           </p>
         </div>
       ) : (
