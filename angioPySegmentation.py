@@ -3767,6 +3767,29 @@ else:
 # Render active user info and log out button in the sidebar
 with st.sidebar:
     if st.session_state.user:
+        # Show link to decoupled Admin Panel for administrators above login details
+        if st.session_state.user.get("role") == "admin" and firebase_available:
+            st.markdown("""
+                <a href="/admin/" target="_blank">
+                    <button style="
+                        background-color: #00ff00;
+                        color: black;
+                        border: none;
+                        border-radius: 8px;
+                        padding: 10px 18px;
+                        font-weight: 600;
+                        font-size: 14px;
+                        cursor: pointer;
+                        box-shadow: 0 4px 12px 0 rgba(0, 255, 0, 0.2);
+                        width: 100%;
+                        margin-bottom: 15px;
+                        transition: all 0.2s;
+                    " onmouseover="this.style.backgroundColor='#2eff2e'" onmouseout="this.style.backgroundColor='#00ff00'">
+                        🚀 Otwórz nowy Panel Administratora
+                    </button>
+                </a>
+            """, unsafe_allow_html=True)
+            
         st.markdown(f"👤 **Logged in as:** {st.session_state.user['name']}")
         if not firebase_available:
             st.warning("⚠️ Offline mode (no database)")
@@ -3775,9 +3798,9 @@ with st.sidebar:
             
         # App Mode selection for Admin vs Analyst
         if st.session_state.user.get("role") == "admin":
-            if "app_mode" not in st.session_state:
+            if "app_mode" not in st.session_state or st.session_state.app_mode == "👑 Admin Panel":
                 st.session_state.app_mode = "🔍 Angiography Analysis"
-            modes = ["🔍 Angiography Analysis", "👑 Admin Panel", "📖 Instructions"]
+            modes = ["🔍 Angiography Analysis", "📖 Instructions"]
             selected_mode = st.selectbox("Application Mode", modes, index=modes.index(st.session_state.app_mode) if st.session_state.app_mode in modes else 0, key="app_mode_select")
             if selected_mode != st.session_state.app_mode:
                 st.session_state.app_mode = selected_mode
