@@ -887,11 +887,26 @@ function CachingTab({ token }) {
             ) : (
               <select value={selectedTarget} onChange={e => setSelectedTarget(e.target.value)} style={{ maxWidth: '400px' }}>
                 <option value="" disabled>-- Wybierz Ośrodek --</option>
-                {sites.map(s => (
-                  <option key={s.site} value={s.site}>
-                    Ośrodek {s.site} {s.status === 'unassigned' ? '(Nieprzypisany)' : ''}
-                  </option>
-                ))}
+                {sites.map(s => {
+                  let assignmentLabel = '';
+                  if (s.status === 'assigned_full' && s.assigned_to) {
+                    const matchedName = analysts.find(a => a.username === s.assigned_to)?.name || s.assigned_to;
+                    assignmentLabel = `(${matchedName})`;
+                  } else if (s.status === 'assigned_partial' && s.assigned_to) {
+                    const partialNames = Array.isArray(s.assigned_to)
+                      ? s.assigned_to.map(username => analysts.find(a => a.username === username)?.name || username).join(', ')
+                      : (analysts.find(a => a.username === s.assigned_to)?.name || s.assigned_to);
+                    assignmentLabel = `(Częściowo: ${partialNames})`;
+                  } else {
+                    assignmentLabel = '(Nieprzypisany)';
+                  }
+                  
+                  return (
+                    <option key={s.site} value={s.site}>
+                      Ośrodek {s.site} {assignmentLabel}
+                    </option>
+                  );
+                })}
               </select>
             )}
           </div>
