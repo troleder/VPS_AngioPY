@@ -421,7 +421,10 @@ def _prefetch_cases_worker(cases: List[dict], task_id: str):
                 "detail": "Scanning files on Tailscale..."
             })
             
-        case_folders = []
+        patient_cases_to_copy = []
+        total_size_bytes = 0
+        total_files_count = 0
+        
         for c in cases:
             site = c["site"]
             pid = c["patient_id"]
@@ -429,12 +432,8 @@ def _prefetch_cases_worker(cases: List[dict], task_id: str):
             r_locs = get_raw_folders_for_clean_path(clean_path, base_dir)
             src_abs_list = [os.path.abspath(os.path.join(base_dir, r)) for r in r_locs]
             dst_abs = os.path.abspath(os.path.join("./tailscale_cache", clean_path))
-            case_folders.append((src_abs_list, dst_abs))
             
-        files_to_copy = []
-        total_size_bytes = 0
-        
-        for src_abs_list, dst_abs in case_folders:
+            patient_files = []
             for s_path in src_abs_list:
                 if not os.path.exists(s_path):
                     continue
@@ -463,11 +462,18 @@ def _prefetch_cases_worker(cases: List[dict], task_id: str):
                         except:
                             sz = 0
                         dst_fp = get_cache_file_path(src_fp, base_dir)
-                        files_to_copy.append((src_fp, dst_fp, sz))
+                        patient_files.append((src_fp, dst_fp, sz))
                         total_size_bytes += sz
-                        
-        total_files = len(files_to_copy)
-        if total_files == 0:
+                        total_files_count += 1
+            
+            patient_cases_to_copy.append({
+                "site": site,
+                "patient_id": pid,
+                "dst_abs": dst_abs,
+                "files": patient_files
+            })
+            
+        if total_files_count == 0:
             with _copy_tasks_lock:
                 _active_copy_tasks.set_task(task_id, {
                     "status": "success",
@@ -480,7 +486,7 @@ def _prefetch_cases_worker(cases: List[dict], task_id: str):
             _active_copy_tasks.set_task(task_id, {
                 "status": "running",
                 "copied_files": 0,
-                "total_files": total_files,
+                "total_files": total_files_count,
                 "copied_bytes": 0,
                 "total_bytes": total_size_bytes,
                 "speed": 0.0,
@@ -490,42 +496,61 @@ def _prefetch_cases_worker(cases: List[dict], task_id: str):
             })
             
         copied_bytes = 0
+        copied_files_count = 0
         start_time = time.time()
         last_write_time = 0
         
-        for idx, (src_fp, dst_fp, sz) in enumerate(files_to_copy):
-            os.makedirs(os.path.dirname(dst_fp), exist_ok=True)
-            robust_copy(src_fp, dst_fp)
-            copied_bytes += sz
+        for case in patient_cases_to_copy:
+            dst_abs = case["dst_abs"]
+            files = case["files"]
             
-            now = time.time()
-            elapsed = now - start_time
-            
-            is_last = (idx + 1 == total_files)
-            if is_last or (now - last_write_time) >= 1.5:
-                last_write_time = now
-                speed_mb = 0.0
-                if elapsed > 0:
-                    speed_mb = (copied_bytes / (1024 * 1024)) / elapsed
-                    
-                est_left = 0.0
-                if copied_bytes > 0:
-                    bytes_left = total_size_bytes - copied_bytes
-                    est_left = bytes_left / (copied_bytes / elapsed)
-                    
-                with _copy_tasks_lock:
-                    _active_copy_tasks.set_task(task_id, {
-                        "status": "running",
-                        "copied_files": idx + 1,
-                        "total_files": total_files,
-                        "copied_bytes": copied_bytes,
-                        "total_bytes": total_size_bytes,
-                        "speed": speed_mb,
-                        "est_left": est_left,
-                        "start_time": start_time
-                    })
+            if not files:
+                try:
+                    os.makedirs(dst_abs, exist_ok=True)
+                    sentinel_path = os.path.join(dst_abs, ".cache_complete")
+                    with open(sentinel_path, "w") as f:
+                        f.write("completed")
+                except:
+                    pass
+                continue
                 
-        for _, dst_abs in case_folders:
+            for src_fp, dst_fp, sz in files:
+                os.makedirs(os.path.dirname(dst_fp), exist_ok=True)
+                robust_copy(src_fp, dst_fp)
+                copied_bytes += sz
+                copied_files_count += 1
+                
+                # Cooldown delay of 100ms to allow system/VPN to yield to user requests
+                time.sleep(0.1)
+                
+                now = time.time()
+                elapsed = now - start_time
+                
+                is_last = (copied_files_count == total_files_count)
+                if is_last or (now - last_write_time) >= 1.5:
+                    last_write_time = now
+                    speed_mb = 0.0
+                    if elapsed > 0:
+                        speed_mb = (copied_bytes / (1024 * 1024)) / elapsed
+                        
+                    est_left = 0.0
+                    if copied_bytes > 0:
+                        bytes_left = total_size_bytes - copied_bytes
+                        est_left = bytes_left / (copied_bytes / elapsed)
+                        
+                    with _copy_tasks_lock:
+                        _active_copy_tasks.set_task(task_id, {
+                            "status": "running",
+                            "copied_files": copied_files_count,
+                            "total_files": total_files_count,
+                            "copied_bytes": copied_bytes,
+                            "total_bytes": total_size_bytes,
+                            "speed": speed_mb,
+                            "est_left": est_left,
+                            "start_time": start_time
+                        })
+            
+            # Immediately mark this specific patient's cache complete
             try:
                 now = time.time()
                 os.utime(dst_abs, (now, now))
@@ -538,8 +563,8 @@ def _prefetch_cases_worker(cases: List[dict], task_id: str):
         with _copy_tasks_lock:
             _active_copy_tasks.set_task(task_id, {
                 "status": "success",
-                "copied_files": total_files,
-                "total_files": total_files,
+                "copied_files": total_files_count,
+                "total_files": total_files_count,
                 "copied_bytes": total_size_bytes,
                 "total_bytes": total_size_bytes,
                 "speed": 0.0,
