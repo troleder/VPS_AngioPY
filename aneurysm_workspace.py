@@ -758,6 +758,50 @@ def get_preview_image(dicom_path, start_ix, best_ix, end_ix, file_size=None):
     except Exception as e:
         return None
 
+def get_best_or_saved_frame(active_pid, dfp, d_meta):
+    """
+    Returns the optimal frame index for a series:
+    1. If user already chose a valid frame (> 0 or frame 0 has a saved mask), returns it.
+    2. If any frame has an existing segmentation mask for this patient/series, returns that frame.
+    3. Otherwise, automatically analyzes flow to detect the Peak QCA contrast frame.
+    4. Falls back to middle frame if flow detection is inconclusive, never blank frame 0.
+    """
+    frame_key = f"caa_frame_{active_pid}_{os.path.basename(dfp)}"
+    n_frames = d_meta.get("total_frames", 1)
+    if n_frames <= 1:
+        st.session_state[frame_key] = 0
+        return 0
+
+    # 1. Check current frame in session state
+    if frame_key in st.session_state:
+        cur_fr = st.session_state[frame_key]
+        if 0 <= cur_fr < n_frames:
+            case_key = f"{active_pid}_{os.path.basename(dfp)}_{cur_fr}"
+            if cur_fr > 0 or st.session_state.get(f"caa_mask_{case_key}") is not None:
+                return cur_fr
+
+    # 2. Check if any frame has a saved mask
+    base_prefix = f"caa_mask_{active_pid}_{os.path.basename(dfp)}_"
+    saved_frames = []
+    for k in list(st.session_state.keys()):
+        if k.startswith(base_prefix) and st.session_state.get(k) is not None:
+            tail = k[len(base_prefix):]
+            if tail.isdigit():
+                saved_frames.append(int(tail))
+    if saved_frames:
+        chosen_fr = min(max(0, saved_frames[0]), n_frames - 1)
+        st.session_state[frame_key] = chosen_fr
+        return chosen_fr
+
+    # 3. Peak QCA flow analysis
+    fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
+    b_ix, _, _ = analyze_series_flow(dfp, fsize)
+    if b_ix <= 0 and n_frames > 1:
+        b_ix = min(int(n_frames / 2), n_frames - 1)
+    chosen_fr = max(0, min(b_ix, n_frames - 1))
+    st.session_state[frame_key] = chosen_fr
+    return chosen_fr
+
 def find_biplane_pairs(series_map, series_meta):
     """
     Finds groups of sequences chosen for analysis that share the exact same (vessel_system, aha_code).
@@ -802,7 +846,7 @@ def render_series_card(active_pid, name, dfp, d_meta, series_meta, meta_store_ke
     chosen = m.get("chosen_for_analysis", False)
     chosen_badge = "⭐ " if chosen else ""
     
-    active_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(dfp)}", 0)
+    active_fr = get_best_or_saved_frame(active_pid, dfp, d_meta)
     has_mask = bool(st.session_state.get(f"caa_mask_{active_pid}_{os.path.basename(dfp)}_{active_fr}") is not None)
     status_dot = "🟢" if has_mask else "⚪"
     
@@ -931,8 +975,8 @@ def render_projections_gallery(active_pid, series_map):
             is_valid_angle = (diff_deg >= 30.0)
             status_icon = "✅" if is_valid_angle else "⚠️"
             
-            p1_active_frame = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(pair['p1_dfp'])}", 0)
-            p2_active_frame = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(pair['p2_dfp'])}", 0)
+            p1_active_frame = get_best_or_saved_frame(active_pid, pair['p1_dfp'], pair['p1_meta'])
+            p2_active_frame = get_best_or_saved_frame(active_pid, pair['p2_dfp'], pair['p2_meta'])
             
             p1_has_mask = bool(st.session_state.get(f"caa_mask_{active_pid}_{os.path.basename(pair['p1_dfp'])}_{p1_active_frame}") is not None)
             p2_has_mask = bool(st.session_state.get(f"caa_mask_{active_pid}_{os.path.basename(pair['p2_dfp'])}_{p2_active_frame}") is not None)
@@ -1435,17 +1479,48 @@ def render_catheter_calibration_widget(active_pid, p_name, p_dfp, p_meta, tag="P
     d_meta = p_meta
     n_frames = d_meta["total_frames"]
     frame_key = f"caa_frame_{active_pid}_{os.path.basename(dfp)}"
-    if frame_key not in st.session_state:
-        fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
-        b_ix, _, _ = analyze_series_flow(dfp, fsize)
-        st.session_state[frame_key] = b_ix
+    frame_slider = get_best_or_saved_frame(active_pid, dfp, d_meta)
         
-    c_sl1, c_sl2 = st.columns([2.5, 1.5])
+    c_sl1, c_sl2, c_sl3, c_sl4 = st.columns([3.2, 0.6, 0.6, 1.6])
+    cal_slider_key = f"sl_frame_cal_{tag}_{active_pid}_{os.path.basename(dfp)}"
+    if cal_slider_key in st.session_state and st.session_state[cal_slider_key] != frame_slider:
+        st.session_state[cal_slider_key] = frame_slider
+
     with c_sl1:
-        frame_slider = st.slider(f"Numer klatki ({tag}):", 0, max(0, n_frames - 1), value=st.session_state[frame_key], key=f"sl_frame_cal_{tag}_{active_pid}_{os.path.basename(dfp)}")
-        st.session_state[frame_key] = frame_slider
+        new_frame = st.slider(
+            f"🎬 Klatka do kalibracji ({tag}):",
+            min_value=0,
+            max_value=max(0, n_frames - 1),
+            value=frame_slider,
+            key=cal_slider_key,
+            help="Przesuń suwak, aby wybrać klatkę z najlepiej widocznym cewnikiem"
+        )
+        if new_frame != frame_slider:
+            st.session_state[frame_key] = new_frame
+            frame_slider = new_frame
+            st.rerun()
+            
     with c_sl2:
-        st.caption(f"Kąty: **{d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°** ({d_meta['series_desc']})")
+        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+        if st.button("◀️", key=f"btn_prev_cal_fr_{tag}_{active_pid}_{os.path.basename(dfp)}", help="Poprzednia klatka (-1)"):
+            if frame_slider > 0:
+                st.session_state[frame_key] = frame_slider - 1
+                if cal_slider_key in st.session_state:
+                    st.session_state[cal_slider_key] = frame_slider - 1
+                st.rerun()
+                
+    with c_sl3:
+        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+        if st.button("▶️", key=f"btn_next_cal_fr_{tag}_{active_pid}_{os.path.basename(dfp)}", help="Następna klatka (+1)"):
+            if frame_slider < n_frames - 1:
+                st.session_state[frame_key] = frame_slider + 1
+                if cal_slider_key in st.session_state:
+                    st.session_state[cal_slider_key] = frame_slider + 1
+                st.rerun()
+
+    with c_sl4:
+        st.markdown(f"**Klatka {frame_slider + 1} / {n_frames}**")
+        st.caption(f"Kąty: **{d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°**")
         
     frame_pixels = d_meta["pixels"][frame_slider]
     norm_512 = get_norm_512(frame_pixels)
@@ -1556,12 +1631,63 @@ def render_artery_segmentation_widget(active_pid, p_name, p_dfp, p_meta, tag="P1
     d_meta = p_meta
     n_frames = d_meta["total_frames"]
     frame_key = f"caa_frame_{active_pid}_{os.path.basename(dfp)}"
-    frame_slider = st.session_state.get(frame_key, 0)
+    frame_slider = get_best_or_saved_frame(active_pid, dfp, d_meta)
     
     calib_key = f"caa_calib_{active_pid}_{os.path.basename(dfp)}"
     calib_info = st.session_state.get(calib_key)
     dicom_mm_pp = d_meta["spacing"] * (d_meta["pixels"].shape[-1] / 512.0)
     active_mm_pp = calib_info["mm_per_pixel"] if calib_info else dicom_mm_pp
+
+    # Frame selection bar: slider + step buttons + Peak QCA
+    c_sl1, c_sl2, c_sl3, c_sl4 = st.columns([3.2, 0.6, 0.6, 1.6])
+    seg_slider_key = f"sl_frame_seg_{tag}_{active_pid}_{os.path.basename(dfp)}"
+    if seg_slider_key in st.session_state and st.session_state[seg_slider_key] != frame_slider:
+        st.session_state[seg_slider_key] = frame_slider
+
+    with c_sl1:
+        new_frame = st.slider(
+            f"🎬 Przesuń, aby wybrać klatkę do obrysowania ({tag}):",
+            min_value=0,
+            max_value=max(0, n_frames - 1),
+            value=frame_slider,
+            key=seg_slider_key,
+            help="Przesuń suwak, aby wybrać klatkę z optymalnym wypełnieniem tętnicy kontrastem"
+        )
+        if new_frame != frame_slider:
+            st.session_state[frame_key] = new_frame
+            frame_slider = new_frame
+            st.rerun()
+            
+    with c_sl2:
+        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+        if st.button("◀️", key=f"btn_prev_fr_{tag}_{active_pid}_{os.path.basename(dfp)}", help="Poprzednia klatka (-1)"):
+            if frame_slider > 0:
+                st.session_state[frame_key] = frame_slider - 1
+                if seg_slider_key in st.session_state:
+                    st.session_state[seg_slider_key] = frame_slider - 1
+                st.rerun()
+                
+    with c_sl3:
+        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+        if st.button("▶️", key=f"btn_next_fr_{tag}_{active_pid}_{os.path.basename(dfp)}", help="Następna klatka (+1)"):
+            if frame_slider < n_frames - 1:
+                st.session_state[frame_key] = frame_slider + 1
+                if seg_slider_key in st.session_state:
+                    st.session_state[seg_slider_key] = frame_slider + 1
+                st.rerun()
+
+    with c_sl4:
+        st.markdown(f"**Klatka {frame_slider + 1} / {n_frames}**")
+        fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
+        b_ix, _, _ = analyze_series_flow(dfp, fsize)
+        if b_ix > 0 and b_ix != frame_slider:
+            if st.button(f"🎯 Peak QCA ({b_ix+1})", key=f"btn_peak_{tag}_{active_pid}_{os.path.basename(dfp)}", use_container_width=True, help="Skocz do klatki optymalnego kontrastu"):
+                st.session_state[frame_key] = b_ix
+                if seg_slider_key in st.session_state:
+                    st.session_state[seg_slider_key] = b_ix
+                st.rerun()
+        else:
+            st.caption(f"Kąty: {d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°")
     
     frame_pixels = d_meta["pixels"][frame_slider]
     norm_512 = get_norm_512(frame_pixels)
@@ -1643,6 +1769,13 @@ def render_artery_segmentation_widget(active_pid, p_name, p_dfp, p_meta, tag="P1
             if st.button(f"🗑️ Wyczyść punkty {tag}", key=f"btn_clr_{tag}_{case_key}", use_container_width=True):
                 st.session_state["caa_cv_sfx"] = st.session_state.get("caa_cv_sfx", 0) + 1
                 st.rerun()
+            if active_mask is not None:
+                if st.button(f"🔄 Usuń obrys {tag}", key=f"btn_del_mask_{tag}_{case_key}", use_container_width=True, help="Usuwa obrys tętniaka dla tej klatki"):
+                    st.session_state.pop(mask_key, None)
+                    st.session_state.pop(prof_key, None)
+                    st.session_state.pop(lm_key, None)
+                    st.session_state["caa_cv_sfx"] = st.session_state.get("caa_cv_sfx", 0) + 1
+                    st.rerun()
 
     with col_params:
         st.markdown(f"##### Pomiary {tag}")
@@ -1688,8 +1821,8 @@ def render_biplane_results_content(active_pid, pair, series_map):
     p2_name, p2_dfp, p2_meta = pair["p2_name"], pair["p2_dfp"], pair["p2_meta"]
     angle_diff = pair.get("angle_diff", 0.0)
     
-    p1_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(p1_dfp)}", 0)
-    p2_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(p2_dfp)}", 0)
+    p1_fr = get_best_or_saved_frame(active_pid, p1_dfp, p1_meta)
+    p2_fr = get_best_or_saved_frame(active_pid, p2_dfp, p2_meta)
     
     p1_case_key = f"{active_pid}_{os.path.basename(p1_dfp)}_{p1_fr}"
     p2_case_key = f"{active_pid}_{os.path.basename(p2_dfp)}_{p2_fr}"
@@ -1917,8 +2050,8 @@ def render_paired_delineation_view(active_pid, series_map):
     st.markdown("---")
 
     # Frame and calibration states
-    p1_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(p1_dfp)}", 0)
-    p2_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(p2_dfp)}", 0)
+    p1_fr = get_best_or_saved_frame(active_pid, p1_dfp, p1_meta)
+    p2_fr = get_best_or_saved_frame(active_pid, p2_dfp, p2_meta)
     
     calib1 = st.session_state.get(f"caa_calib_{active_pid}_{os.path.basename(p1_dfp)}")
     calib2 = st.session_state.get(f"caa_calib_{active_pid}_{os.path.basename(p2_dfp)}")
@@ -1989,24 +2122,28 @@ def render_paired_delineation_view(active_pid, series_map):
             else:
                 st.info(f"⚪ Projekcja 2: Oczekuje na obrysowanie (Klatka {p2_fr+1})")
 
+        seg_sel_key = f"caa_pair_seg_sel_{active_pid}"
+        if seg_sel_key not in st.session_state and mask1 is not None and mask2 is None:
+            st.session_state[seg_sel_key] = f"🌐 Projekcja 2 ({p2_meta['series_desc']})"
+
         seg_sel = st.radio(
             "Wybierz projekcję do obrysowania:",
             [f"📹 Projekcja 1 ({p1_meta['series_desc']})", f"🌐 Projekcja 2 ({p2_meta['series_desc']})"],
             horizontal=True,
-            key=f"caa_pair_seg_sel_{active_pid}"
+            key=seg_sel_key
         )
         
         if "Projekcja 1" in seg_sel:
             render_artery_segmentation_widget(active_pid, p1_name, p1_dfp, p1_meta, tag="P1")
             if mask1 is not None and mask2 is None:
                 if st.button("➡️ Przejdź do obrysowania Projekcji 2", type="primary", use_container_width=True):
-                    st.session_state[f"caa_pair_seg_sel_{active_pid}"] = f"🌐 Projekcja 2 ({p2_meta['series_desc']})"
+                    st.session_state[seg_sel_key] = f"🌐 Projekcja 2 ({p2_meta['series_desc']})"
                     st.rerun()
         else:
             render_artery_segmentation_widget(active_pid, p2_name, p2_dfp, p2_meta, tag="P2")
             if mask2 is not None and mask1 is None:
                 if st.button("⬅️ Przejdź do obrysowania Projekcji 1", type="primary", use_container_width=True):
-                    st.session_state[f"caa_pair_seg_sel_{active_pid}"] = f"📹 Projekcja 1 ({p1_meta['series_desc']})"
+                    st.session_state[seg_sel_key] = f"📹 Projekcja 1 ({p1_meta['series_desc']})"
                     st.rerun()
 
         st.markdown("---")
