@@ -2467,24 +2467,31 @@ def render_paired_delineation_view(active_pid, series_map):
             else:
                 st.info(f"⚪ Projekcja 2 ({p2_meta['series_desc']}): Oczekuje na kalibrację")
 
+        cal_sel_key = f"caa_pair_cal_sel_{active_pid}"
+        target_cal_key = f"caa_pair_target_cal_sel_{active_pid}"
+        if target_cal_key in st.session_state:
+            st.session_state[cal_sel_key] = st.session_state.pop(target_cal_key)
+        elif cal_sel_key not in st.session_state and calib1 and not calib2:
+            st.session_state[cal_sel_key] = f"🌐 Projekcja 2 ({p2_meta['series_desc']})"
+
         cal_sel = st.radio(
             "Wybierz projekcję do kalibracji:",
             [f"📹 Projekcja 1 ({p1_meta['series_desc']})", f"🌐 Projekcja 2 ({p2_meta['series_desc']})"],
             horizontal=True,
-            key=f"caa_pair_cal_sel_{active_pid}"
+            key=cal_sel_key
         )
         
         if "Projekcja 1" in cal_sel:
             render_catheter_calibration_widget(active_pid, p1_name, p1_dfp, p1_meta, tag="P1")
             if calib1 and not calib2:
                 if st.button("➡️ Przejdź do kalibracji Projekcji 2", type="primary", use_container_width=True):
-                    st.session_state[f"caa_pair_cal_sel_{active_pid}"] = f"🌐 Projekcja 2 ({p2_meta['series_desc']})"
+                    st.session_state[target_cal_key] = f"🌐 Projekcja 2 ({p2_meta['series_desc']})"
                     st.rerun()
         else:
             render_catheter_calibration_widget(active_pid, p2_name, p2_dfp, p2_meta, tag="P2")
             if calib2 and not calib1:
                 if st.button("⬅️ Przejdź do kalibracji Projekcji 1", type="primary", use_container_width=True):
-                    st.session_state[f"caa_pair_cal_sel_{active_pid}"] = f"📹 Projekcja 1 ({p1_meta['series_desc']})"
+                    st.session_state[target_cal_key] = f"📹 Projekcja 1 ({p1_meta['series_desc']})"
                     st.rerun()
 
         st.markdown("---")
@@ -2517,7 +2524,10 @@ def render_paired_delineation_view(active_pid, series_map):
                 st.info(f"⚪ Projekcja 2: Oczekuje na obrysowanie (Klatka {p2_fr+1})")
 
         seg_sel_key = f"caa_pair_seg_sel_{active_pid}"
-        if seg_sel_key not in st.session_state and mask1 is not None and mask2 is None:
+        target_seg_key = f"caa_pair_target_seg_sel_{active_pid}"
+        if target_seg_key in st.session_state:
+            st.session_state[seg_sel_key] = st.session_state.pop(target_seg_key)
+        elif seg_sel_key not in st.session_state and mask1 is not None and mask2 is None:
             st.session_state[seg_sel_key] = f"🌐 Projekcja 2 ({p2_meta['series_desc']})"
 
         seg_sel = st.radio(
@@ -2531,13 +2541,13 @@ def render_paired_delineation_view(active_pid, series_map):
             render_artery_segmentation_widget(active_pid, p1_name, p1_dfp, p1_meta, tag="P1")
             if mask1 is not None and mask2 is None:
                 if st.button("➡️ Przejdź do obrysowania Projekcji 2", type="primary", use_container_width=True):
-                    st.session_state[seg_sel_key] = f"🌐 Projekcja 2 ({p2_meta['series_desc']})"
+                    st.session_state[target_seg_key] = f"🌐 Projekcja 2 ({p2_meta['series_desc']})"
                     st.rerun()
         else:
             render_artery_segmentation_widget(active_pid, p2_name, p2_dfp, p2_meta, tag="P2")
             if mask2 is not None and mask1 is None:
                 if st.button("⬅️ Przejdź do obrysowania Projekcji 1", type="primary", use_container_width=True):
-                    st.session_state[seg_sel_key] = f"📹 Projekcja 1 ({p1_meta['series_desc']})"
+                    st.session_state[target_seg_key] = f"📹 Projekcja 1 ({p1_meta['series_desc']})"
                     st.rerun()
 
         st.markdown("---")
