@@ -311,10 +311,12 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
         print(f"Error in compute_biplane_simpsons_volumetry: {e}")
         return None
 
-def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", show_ref=True, show_rings=True, n_phi=36):
+def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", orientation="vertical", show_ref=True, show_rings=True, n_phi=36):
     """
     Constructs an interactive 3D mesh reconstruction of the coronary artery aneurysm
     derived from biplane Simpson cross-sectional slice profiles.
+    Supports vertical (pionowa - default, matching anatomical vessel catheterization flow)
+    and horizontal (pozioma) orientations.
     """
     try:
         D1 = np.array(simp["D1_slices"])
@@ -326,21 +328,36 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", show_ref=True
         return None
 
     n_s = len(s)
+    if n_s < 2:
+        return None
+
+    L_tot = float(s[-1]) if len(s) > 0 else 10.0
     phi = np.linspace(0.0, 2.0 * np.pi, n_phi)
-    S, Phi = np.meshgrid(s, phi, indexing="ij")
 
     # Semi-axes along the length
     R1 = (D1 / 2.0)[:, None]
     R2 = (D2 / 2.0)[:, None]
-
-    # Coordinates of aneurysm lumen surface
-    X = R1 * np.cos(Phi)
-    Y = R2 * np.sin(Phi)
-    Z = S
-
-    # Determine surface color values
     mean_D = (D1 + D2) / 2.0
     mean_Dref = (Dref1 + Dref2) / 2.0
+
+    is_vertical = (orientation == "vertical")
+
+    if is_vertical:
+        # Longitudinal axis mapped to vertical Z:
+        # Proximal (s=0) at TOP (+Z), Distal (s=L_tot) at BOTTOM (-Z)
+        z_long = (L_tot / 2.0) - s
+        Z, Phi = np.meshgrid(z_long, phi, indexing="ij")
+        X = R1 * np.cos(Phi)
+        Y = R2 * np.sin(Phi)
+    else:
+        # Horizontal layout along X axis:
+        # Proximal at left (-X), Distal at right (+X)
+        x_long = s - (L_tot / 2.0)
+        X, Phi = np.meshgrid(x_long, phi, indexing="ij")
+        Y = R1 * np.cos(Phi)
+        Z = R2 * np.sin(Phi)
+
+    # Determine surface color values
     if color_mode == "dilation":
         C_1d = mean_D / np.maximum(0.1, mean_Dref)
         color_title = "Rozstrzeń (x Ref)"
@@ -358,11 +375,13 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", show_ref=True
     hover_text = []
     for i in range(n_s):
         row_txt = []
+        seg_pos_name = "Proksymalny (Wlot)" if i == 0 else ("Dystalny (Wylot)" if i == n_s - 1 else f"{s[i]:.1f} mm od wlotu")
         for j in range(n_phi):
             txt = (
-                f"<b>Oś podłużna Z:</b> {s[i]:.1f} mm<br>"
-                f"<b>Średnica D1 (P1):</b> {D1[i]:.2f} mm<br>"
-                f"<b>Średnica D2 (P2):</b> {D2[i]:.2f} mm<br>"
+                f"<b>Pozycja:</b> {seg_pos_name}<br>"
+                f"<b>Odległość od wlotu:</b> {s[i]:.1f} mm<br>"
+                f"<b>Średnica Proj 1 (D1):</b> {D1[i]:.2f} mm<br>"
+                f"<b>Średnica Proj 2 (D2):</b> {D2[i]:.2f} mm<br>"
                 f"<b>Średnia średnica:</b> {mean_D[i]:.2f} mm<br>"
                 f"<b>Pole przekroju:</b> {(np.pi/4 * D1[i] * D2[i]):.1f} mm²<br>"
                 f"<b>Wskaźnik rozstrzeni:</b> {(mean_D[i] / max(0.1, mean_Dref[i])):.2f}x"
@@ -386,16 +405,16 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", show_ref=True
             thickness=14
         ),
         lighting=dict(
-            ambient=0.65,
-            diffuse=0.8,
-            specular=0.6,
-            roughness=0.4,
-            fresnel=0.2
+            ambient=0.68,
+            diffuse=0.82,
+            specular=0.55,
+            roughness=0.35,
+            fresnel=0.25
         ),
         lightposition=dict(x=100, y=200, z=150),
         hoverinfo="text",
         text=hover_text,
-        opacity=0.92,
+        opacity=0.94,
         name="Światło tętniaka"
     ))
 
@@ -403,9 +422,14 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", show_ref=True
     if show_ref:
         Rref1 = (Dref1 / 2.0)[:, None]
         Rref2 = (Dref2 / 2.0)[:, None]
-        X_ref = Rref1 * np.cos(Phi)
-        Y_ref = Rref2 * np.sin(Phi)
-        Z_ref = S
+        if is_vertical:
+            X_ref = Rref1 * np.cos(Phi)
+            Y_ref = Rref2 * np.sin(Phi)
+            Z_ref = Z
+        else:
+            X_ref = X
+            Y_ref = Rref1 * np.cos(Phi)
+            Z_ref = Rref2 * np.sin(Phi)
 
         fig.add_trace(go.Surface(
             x=X_ref, y=Y_ref, z=Z_ref,
@@ -419,10 +443,19 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", show_ref=True
         ))
 
     # 3. Centerline trace
+    if is_vertical:
+        cx = np.zeros_like(s)
+        cy = np.zeros_like(s)
+        cz = z_long
+    else:
+        cx = x_long
+        cy = np.zeros_like(s)
+        cz = np.zeros_like(s)
+
     fig.add_trace(go.Scatter3d(
-        x=np.zeros_like(s),
-        y=np.zeros_like(s),
-        z=s,
+        x=cx,
+        y=cy,
+        z=cz,
         mode="lines",
         line=dict(color="#38bdf8", width=3, dash="dash"),
         hoverinfo="skip",
@@ -433,25 +466,132 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", show_ref=True
     if show_rings:
         def add_caliper_ring(idx, ring_color, label):
             theta_r = np.linspace(0.0, 2.0 * np.pi, 60)
-            rx = (D1[idx] / 2.0) * np.cos(theta_r)
-            ry = (D2[idx] / 2.0) * np.sin(theta_r)
-            rz = np.full_like(theta_r, s[idx])
+            if is_vertical:
+                rx = (D1[idx] / 2.0) * np.cos(theta_r)
+                ry = (D2[idx] / 2.0) * np.sin(theta_r)
+                rz = np.full_like(theta_r, z_long[idx])
+            else:
+                rx = np.full_like(theta_r, x_long[idx])
+                ry = (D1[idx] / 2.0) * np.cos(theta_r)
+                rz = (D2[idx] / 2.0) * np.sin(theta_r)
+
             fig.add_trace(go.Scatter3d(
                 x=rx, y=ry, z=rz,
                 mode="lines",
                 line=dict(color=ring_color, width=5),
                 hoverinfo="text",
-                text=f"{label}: {mean_D[idx]:.1f} mm (Z={s[idx]:.1f} mm)",
+                text=f"{label}: {mean_D[idx]:.1f} mm (od wlotu {s[idx]:.1f} mm)",
                 name=label
             ))
 
-        add_caliper_ring(0, "#22c55e", f"Ref Prox ({mean_D[0]:.1f} mm)")
-        add_caliper_ring(n_s - 1, "#22c55e", f"Ref Dist ({mean_D[-1]:.1f} mm)")
+        add_caliper_ring(0, "#22c55e", f"Ref Prox (Góra) ({mean_D[0]:.1f} mm)")
+        add_caliper_ring(n_s - 1, "#22c55e", f"Ref Dist (Dół) ({mean_D[-1]:.1f} mm)")
         m_idx = simp.get("max_idx_slice", int(np.argmax(mean_D)))
         add_caliper_ring(m_idx, "#ef4444", f"Dmax ({mean_D[m_idx]:.1f} mm)")
 
     max_r = max(float(np.max(D1 / 2.0)), float(np.max(D2 / 2.0)), 3.0)
-    L_tot = float(s[-1]) if len(s) > 0 else 10.0
+
+    if is_vertical:
+        z_aspect = max(2.0, min(4.2, float(L_tot / (2.0 * max_r)) * 1.5))
+        scene_aspect = dict(x=1.0, y=1.0, z=z_aspect)
+        scene_camera = dict(
+            eye=dict(x=0.25, y=2.2, z=0.0),
+            up=dict(x=0, y=0, z=1)
+        )
+        xaxis_cfg = dict(
+            title=dict(text="X: Proj 1 (mm)", font=dict(color="#94a3b8", size=11)),
+            tickfont=dict(color="#64748b", size=9),
+            backgroundcolor="#0f172a",
+            gridcolor="#334155",
+            showbackground=True,
+            range=[-max_r * 1.5, max_r * 1.5]
+        )
+        yaxis_cfg = dict(
+            title=dict(text="Y: Proj 2 (mm)", font=dict(color="#94a3b8", size=11)),
+            tickfont=dict(color="#64748b", size=9),
+            backgroundcolor="#0f172a",
+            gridcolor="#334155",
+            showbackground=True,
+            range=[-max_r * 1.5, max_r * 1.5]
+        )
+        zaxis_cfg = dict(
+            title=dict(text="Z: Oś podłużna (Góra: Prox ↓ Dół: Dist) [mm]", font=dict(color="#38bdf8", size=11)),
+            tickfont=dict(color="#64748b", size=9),
+            backgroundcolor="#0b1120",
+            gridcolor="#334155",
+            showbackground=True,
+            range=[-L_tot / 2.0 - 1.5, L_tot / 2.0 + 1.5]
+        )
+        camera_buttons = [
+            dict(
+                label="↕️ Front (Wertykalnie)",
+                method="relayout",
+                args=[{"scene.camera": dict(eye=dict(x=0.25, y=2.2, z=0.0), up=dict(x=0, y=0, z=1))}]
+            ),
+            dict(
+                label="📐 Izometria",
+                method="relayout",
+                args=[{"scene.camera": dict(eye=dict(x=1.4, y=1.4, z=0.8), up=dict(x=0, y=0, z=1))}]
+            ),
+            dict(
+                label="🔄 Profil Proj 1",
+                method="relayout",
+                args=[{"scene.camera": dict(eye=dict(x=2.2, y=0.2, z=0.0), up=dict(x=0, y=0, z=1))}]
+            ),
+            dict(
+                label="👁️ Przekrój En-Face",
+                method="relayout",
+                args=[{"scene.camera": dict(eye=dict(x=0.0, y=0.0, z=2.4), up=dict(x=0, y=1, z=0))}]
+            ),
+        ]
+    else:
+        x_aspect = max(2.0, min(4.2, float(L_tot / (2.0 * max_r)) * 1.5))
+        scene_aspect = dict(x=x_aspect, y=1.0, z=1.0)
+        scene_camera = dict(
+            eye=dict(x=0.0, y=2.2, z=0.4),
+            up=dict(x=0, y=0, z=1)
+        )
+        xaxis_cfg = dict(
+            title=dict(text="X: Oś naczynia (L: Prox → P: Dist) [mm]", font=dict(color="#38bdf8", size=11)),
+            tickfont=dict(color="#64748b", size=9),
+            backgroundcolor="#0b1120",
+            gridcolor="#334155",
+            showbackground=True,
+            range=[-L_tot / 2.0 - 1.5, L_tot / 2.0 + 1.5]
+        )
+        yaxis_cfg = dict(
+            title=dict(text="Y: Proj 1 (mm)", font=dict(color="#94a3b8", size=11)),
+            tickfont=dict(color="#64748b", size=9),
+            backgroundcolor="#0f172a",
+            gridcolor="#334155",
+            showbackground=True,
+            range=[-max_r * 1.5, max_r * 1.5]
+        )
+        zaxis_cfg = dict(
+            title=dict(text="Z: Proj 2 (mm)", font=dict(color="#94a3b8", size=11)),
+            tickfont=dict(color="#64748b", size=9),
+            backgroundcolor="#0f172a",
+            gridcolor="#334155",
+            showbackground=True,
+            range=[-max_r * 1.5, max_r * 1.5]
+        )
+        camera_buttons = [
+            dict(
+                label="↔️ Profil (Horyzontalnie)",
+                method="relayout",
+                args=[{"scene.camera": dict(eye=dict(x=0.0, y=2.2, z=0.4), up=dict(x=0, y=0, z=1))}]
+            ),
+            dict(
+                label="📐 Izometria",
+                method="relayout",
+                args=[{"scene.camera": dict(eye=dict(x=1.4, y=1.4, z=0.8), up=dict(x=0, y=0, z=1))}]
+            ),
+            dict(
+                label="👁️ Przekrój En-Face",
+                method="relayout",
+                args=[{"scene.camera": dict(eye=dict(x=-2.4, y=0.0, z=0.0), up=dict(x=0, y=0, z=1))}]
+            ),
+        ]
 
     fig.update_layout(
         title=dict(
@@ -460,8 +600,8 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", show_ref=True
         ),
         paper_bgcolor="#090d16",
         plot_bgcolor="#090d16",
-        margin=dict(l=10, r=10, t=40, b=10),
-        height=580,
+        margin=dict(l=10, r=10, t=50, b=10),
+        height=650,
         showlegend=True,
         legend=dict(
             font=dict(color="#94a3b8", size=11),
@@ -470,40 +610,27 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", show_ref=True
             borderwidth=1,
             x=0.02, y=0.98
         ),
-        scene=dict(
-            xaxis=dict(
-                title=dict(text="X: Proj 1 (mm)", font=dict(color="#94a3b8", size=11)),
-                tickfont=dict(color="#64748b", size=9),
-                backgroundcolor="#0f172a",
-                gridcolor="#334155",
-                showbackground=True,
-                range=[-max_r * 1.5, max_r * 1.5]
-            ),
-            yaxis=dict(
-                title=dict(text="Y: Proj 2 (mm)", font=dict(color="#94a3b8", size=11)),
-                tickfont=dict(color="#64748b", size=9),
-                backgroundcolor="#0f172a",
-                gridcolor="#334155",
-                showbackground=True,
-                range=[-max_r * 1.5, max_r * 1.5]
-            ),
-            zaxis=dict(
-                title=dict(text="Z: Oś naczynia (mm)", font=dict(color="#94a3b8", size=11)),
-                tickfont=dict(color="#64748b", size=9),
-                backgroundcolor="#0b1120",
-                gridcolor="#334155",
-                showbackground=True,
-                range=[-1.0, L_tot + 1.0]
-            ),
-            aspectratio=dict(
-                x=1.0,
-                y=1.0,
-                z=max(1.2, float(L_tot / (2.0 * max_r)))
-            ),
-            camera=dict(
-                eye=dict(x=1.6, y=1.6, z=1.2),
-                up=dict(x=0, y=0, z=1)
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="left",
+                x=0.02,
+                y=1.09,
+                xanchor="left",
+                yanchor="top",
+                bgcolor="rgba(15, 23, 42, 0.85)",
+                bordercolor="#334155",
+                borderwidth=1,
+                font=dict(color="#38bdf8", size=11),
+                buttons=camera_buttons
             )
+        ],
+        scene=dict(
+            xaxis=xaxis_cfg,
+            yaxis=yaxis_cfg,
+            zaxis=zaxis_cfg,
+            aspectratio=scene_aspect,
+            camera=scene_camera
         )
     )
     return fig
@@ -2272,24 +2399,34 @@ def render_biplane_results_content(active_pid, pair, series_map):
     st.markdown("#### 🌐 Interaktywna rekonstrukcja 3D tętniaka wieńcowego:")
     st.caption("Trójwymiarowy model światła naczynia zrekonstruowany z obu obrysów (metoda przekrojów eliptycznych Simpsona). **Możesz swobodnie obracać model myszką w 360°, przybliżać kółkiem myszy i badać geometrię worka tętniaka.**")
 
-    c_3d_ctrl1, c_3d_ctrl2, c_3d_ctrl3, c_3d_ctrl4 = st.columns([1.5, 1.2, 1.2, 1.3])
+    c_3d_ctrl0, c_3d_ctrl1, c_3d_ctrl2, c_3d_ctrl3, c_3d_ctrl4 = st.columns([1.3, 1.3, 1.1, 1.1, 1.2])
+    with c_3d_ctrl0:
+        orient_choice = st.radio(
+            "Orientacja naczynia:",
+            options=["↕️ Wertykalnie (Pion)", "↔️ Horyzontalnie"],
+            index=0,
+            horizontal=True,
+            key=f"caa_3d_orient_{pair['aha_code']}",
+            help="Orientacja wertykalna (pionowa) odpowiada naturalnemu przebiegowi naczynia w pracowni hemodynamicznej (od góry: wlot proksymalny -> w dół: wylot dystalny)"
+        )
+        orient_param = "vertical" if "Wertykalnie" in orient_choice else "horizontal"
     with c_3d_ctrl1:
         color_mode = st.radio(
             "Mapa kolorów:",
-            options=["Średnica naczynia [mm]", "Stopień rozstrzeni (x Ref)"],
+            options=["Średnica [mm]", "Rozstrzeń (x Ref)"],
             index=0,
             horizontal=True,
             key=f"caa_3d_colormode_{pair['aha_code']}"
         )
         col_param = "diameter" if "Średnica" in color_mode else "dilation"
     with c_3d_ctrl2:
-        show_ghost_ref = st.checkbox("Pokaż zdrowe naczynie (Ghost Ref)", value=True, key=f"caa_3d_ref_{pair['aha_code']}", help="Półprzezroczysta powłoka pokazująca referencyjny kształt zdrowego naczynia")
+        show_ghost_ref = st.checkbox("Pokaż Ref (Ghost)", value=True, key=f"caa_3d_ref_{pair['aha_code']}", help="Półprzezroczysta powłoka pokazująca referencyjny kształt zdrowego naczynia")
     with c_3d_ctrl3:
-        show_rings = st.checkbox("Pokaż pierścienie kaliperów", value=True, key=f"caa_3d_rings_{pair['aha_code']}", help="Wyświetla pierścienie na poziomie Ref Prox, Dmax i Ref Dist")
+        show_rings = st.checkbox("Pierścienie kaliperów", value=True, key=f"caa_3d_rings_{pair['aha_code']}", help="Wyświetla pierścienie na poziomie Ref Prox, Dmax i Ref Dist")
     with c_3d_ctrl4:
         stl_data = export_aneurysm_to_stl(simp)
         st.download_button(
-            label="📥 Pobierz model 3D (STL)",
+            label="📥 Pobierz 3D (STL)",
             data=stl_data,
             file_name=f"aneurysm_3d_{active_pid}_{pair.get('aha_code', 'seg')}.stl",
             mime="application/sla",
@@ -2301,6 +2438,7 @@ def render_biplane_results_content(active_pid, pair, series_map):
         simp=simp,
         pair=pair,
         color_mode=col_param,
+        orientation=orient_param,
         show_ref=show_ghost_ref,
         show_rings=show_rings
     )
