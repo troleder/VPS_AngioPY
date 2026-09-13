@@ -258,7 +258,14 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
 
         areas = (np.pi / 4.0) * D1 * D2
         ref_areas = (np.pi / 4.0) * Dref1 * Dref2
-        excess_areas = np.maximum(0.0, areas - ref_areas)
+
+        # Kliniczna reguła odcięcia: do 1.2x to fizjologiczna norma (zdrowe naczynie).
+        # Właściwy tętniak / rozstrzeń (szyja i worek) to strefa >= 1.2x.
+        # Tylko dla plastrów >= 1.2x liczymy nadmiarową objętość tętniaka:
+        mean_D_slice = (D1 + D2) / 2.0
+        mean_ref_slice = np.maximum(0.1, (Dref1 + Dref2) / 2.0)
+        dilation_ratio_slice = mean_D_slice / mean_ref_slice
+        excess_areas = np.where(dilation_ratio_slice >= 1.2, np.maximum(0.0, areas - ref_areas), 0.0)
 
         weights = np.ones(len(areas))
         weights[1:-1:2] = 4.0
@@ -267,6 +274,14 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
         total_vol = (ds / 3.0) * float(np.sum(weights * areas))
         ref_vol = (ds / 3.0) * float(np.sum(weights * ref_areas))
         excess_vol = (ds / 3.0) * float(np.sum(weights * excess_areas))
+
+        dilated_mask = (dilation_ratio_slice >= 1.2)
+        if np.any(dilated_mask):
+            aneurysm_indices = np.where(dilated_mask)[0]
+            aneurysm_len = float((aneurysm_indices[-1] - aneurysm_indices[0]) / n_slices * L)
+            aneurysm_len = max(0.5, round(aneurysm_len, 1))
+        else:
+            aneurysm_len = 0.0
 
         d1_max = float(np.max(D1))
         d2_max = float(np.max(D2))
@@ -278,7 +293,8 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
         dil_ratio_1 = round(d1_max / ref1_mean, 2) if ref1_mean > 0 else 1.0
         dil_ratio_2 = round(d2_max / ref2_mean, 2) if ref2_mean > 0 else 1.0
 
-        morphology = "Wrzecionowaty (Fusiform)" if (L / a >= 2.0) else "Workowaty (Saccular)"
+        effective_len = aneurysm_len if aneurysm_len > 0 else L
+        morphology = "Wrzecionowaty (Fusiform)" if (effective_len / a >= 2.0) else "Workowaty (Saccular)"
 
         s_slices = (u_eval * L).tolist()
         max_idx_slice = int(np.argmax((D1 + D2) / 2.0))
@@ -294,6 +310,7 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
             "L1": round(L1, 2),
             "L2": round(L2, 2),
             "L": round(L, 2),
+            "aneurysm_len": aneurysm_len,
             "ellipticity": round(ellipticity, 2),
             "eccentricity": round(eccentricity, 2),
             "dilation_ratio_1": dil_ratio_1,
@@ -358,16 +375,66 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", orientation="
         Z = R2 * np.sin(Phi)
 
     # Determine surface color values
-    if color_mode == "dilation":
-        C_1d = mean_D / np.maximum(0.1, mean_Dref)
+    dil_ratio = mean_D / np.maximum(0.1, mean_Dref)
+
+    if color_mode == "zones":
+        # Wyraźne, dyskretne strefy kliniczne (bez gradientu!):
+        # 0: Zdrowe naczynie (< 1.2x Ref) -> Zielony
+        # 1: Szyja tętniaka / Ektazja (1.2x - 1.4x Ref) -> Bursztynowy/Żółty
+        # 2: Właściwy worek tętniaka (>= 1.4x Ref) -> Czerwony
+        C_1d = np.zeros(n_s, dtype=float)
+        for i in range(n_s):
+            if dil_ratio[i] < 1.2:
+                C_1d[i] = 0.0
+            elif dil_ratio[i] < 1.4:
+                C_1d[i] = 1.0
+            else:
+                C_1d[i] = 2.0
+
+        color_title = "<b>Strefy kliniczne</b>"
+        cmin, cmax = 0.0, 2.0
+        colorscale = [
+            [0.0, "#10b981"],   # Zielony: Zdrowe naczynie (< 1.2x)
+            [0.25, "#10b981"],
+            [0.25, "#f59e0b"],  # Bursztynowy/Żółty: Szyja tętniaka (1.2x - 1.4x)
+            [0.75, "#f59e0b"],
+            [0.75, "#ef4444"],  # Czerwony: Worek tętniaka (>= 1.4x)
+            [1.0, "#ef4444"]
+        ]
+        colorbar_cfg = dict(
+            title=dict(text=color_title, font=dict(color="#e2e8f0", size=12)),
+            tickmode="array",
+            tickvals=[0.0, 1.0, 2.0],
+            ticktext=["🟢 Zdrowe (<1.2x)", "🟡 Szyja (1.2–1.4x)", "🔴 Worek (≥1.4x)"],
+            tickfont=dict(color="#e2e8f0", size=10),
+            len=0.70,
+            x=1.02,
+            thickness=16
+        )
+    elif color_mode == "dilation":
+        C_1d = dil_ratio
         color_title = "Rozstrzeń (x Ref)"
         cmin, cmax = 1.0, max(2.5, float(np.max(C_1d)))
         colorscale = "Turbo"
-    else:
+        colorbar_cfg = dict(
+            title=dict(text=color_title, font=dict(color="#e2e8f0", size=12)),
+            tickfont=dict(color="#e2e8f0", size=10),
+            len=0.75,
+            x=1.02,
+            thickness=14
+        )
+    else:  # diameter
         C_1d = mean_D
         color_title = "Średnica [mm]"
         cmin, cmax = float(np.min(C_1d)), float(np.max(C_1d))
         colorscale = "Turbo"
+        colorbar_cfg = dict(
+            title=dict(text=color_title, font=dict(color="#e2e8f0", size=12)),
+            tickfont=dict(color="#e2e8f0", size=10),
+            len=0.75,
+            x=1.02,
+            thickness=14
+        )
 
     C = np.tile(C_1d[:, None], (1, n_phi))
 
@@ -376,15 +443,24 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", orientation="
     for i in range(n_s):
         row_txt = []
         seg_pos_name = "Proksymalny (Wlot)" if i == 0 else ("Dystalny (Wylot)" if i == n_s - 1 else f"{s[i]:.1f} mm od wlotu")
+        r_val = dil_ratio[i]
+        if r_val < 1.2:
+            zone_badge = "🟢 Zdrowe naczynie (< 1.2x Ref)"
+        elif r_val < 1.4:
+            zone_badge = "🟡 Szyja tętniaka / Rozstrzeń (1.2x – 1.4x Ref)"
+        else:
+            zone_badge = "🔴 Worek tętniaka (≥ 1.4x Ref)"
+
         for j in range(n_phi):
             txt = (
+                f"<b>Strefa:</b> {zone_badge}<br>"
+                f"<b>Wskaźnik rozstrzeni:</b> {r_val:.2f}x Ref<br>"
                 f"<b>Pozycja:</b> {seg_pos_name}<br>"
                 f"<b>Odległość od wlotu:</b> {s[i]:.1f} mm<br>"
                 f"<b>Średnica Proj 1 (D1):</b> {D1[i]:.2f} mm<br>"
                 f"<b>Średnica Proj 2 (D2):</b> {D2[i]:.2f} mm<br>"
                 f"<b>Średnia średnica:</b> {mean_D[i]:.2f} mm<br>"
-                f"<b>Pole przekroju:</b> {(np.pi/4 * D1[i] * D2[i]):.1f} mm²<br>"
-                f"<b>Wskaźnik rozstrzeni:</b> {(mean_D[i] / max(0.1, mean_Dref[i])):.2f}x"
+                f"<b>Pole przekroju:</b> {(np.pi/4 * D1[i] * D2[i]):.1f} mm²"
             )
             row_txt.append(txt)
         hover_text.append(row_txt)
@@ -397,13 +473,7 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", orientation="
         surfacecolor=C,
         colorscale=colorscale,
         cmin=cmin, cmax=cmax,
-        colorbar=dict(
-            title=dict(text=color_title, font=dict(color="#e2e8f0", size=12)),
-            tickfont=dict(color="#e2e8f0", size=10),
-            len=0.75,
-            x=1.02,
-            thickness=14
-        ),
+        colorbar=colorbar_cfg,
         lighting=dict(
             ambient=0.68,
             diffuse=0.82,
@@ -2377,7 +2447,8 @@ def render_biplane_results_content(active_pid, pair, series_map):
             {simp['total_vol']:.1f} mm³ <span style='font-size: 16px; font-weight: normal; color: #ccfbf1;'>({simp['total_vol']:.1f} μl)</span>
         </div>
         <div style='font-size: 15px; color: #a7f3d0; margin-top: 6px;'>
-            • Nadmiarowa objętość rozstrzeni (Excess Volume): <b>{simp['excess_vol']:.1f} mm³</b> ({simp['excess_vol']:.1f} μl)<br/>
+            • Nadmiarowa objętość tętniaka (≥ 1.2x Ref): <b>{simp['excess_vol']:.1f} mm³</b> ({simp['excess_vol']:.1f} μl)<br/>
+            • Długość właściwego worka tętniaka (≥ 1.2x Ref): <b>{simp.get('aneurysm_len', simp['L']):.1f} mm</b> (cały segment: {simp['L']:.1f} mm)<br/>
             • Objętość zdrowego naczynia referencyjnego: <b>{simp['ref_vol']:.1f} mm³</b><br/>
             • Różnica kątów w przestrzeni: <b>{angle_diff:.1f}°</b> {"✅ (Spełnia warunek ≥ 30°)" if angle_diff>=30 else "⚠️ (< 30°)"}
         </div>
@@ -2390,7 +2461,7 @@ def render_biplane_results_content(active_pid, pair, series_map):
     with c_m2:
         st.metric("Eliptyczność przekroju (a/b):", f"{simp['ellipticity']}")
     with c_m3:
-        st.metric("Uśredniona długość (L):", f"{simp['L']:.1f} mm")
+        st.metric("Długość worka (≥1.2x):", f"{simp.get('aneurysm_len', simp['L']):.1f} mm", delta=f"Cały seg: {simp['L']:.1f} mm")
     with c_m4:
         st.metric("Morfologia:", simp["morphology"])
 
@@ -2399,7 +2470,7 @@ def render_biplane_results_content(active_pid, pair, series_map):
     st.markdown("#### 🌐 Interaktywna rekonstrukcja 3D tętniaka wieńcowego:")
     st.caption("Trójwymiarowy model światła naczynia zrekonstruowany z obu obrysów (metoda przekrojów eliptycznych Simpsona). **Możesz swobodnie obracać model myszką w 360°, przybliżać kółkiem myszy i badać geometrię worka tętniaka.**")
 
-    c_3d_ctrl0, c_3d_ctrl1, c_3d_ctrl2, c_3d_ctrl3, c_3d_ctrl4 = st.columns([1.3, 1.3, 1.1, 1.1, 1.2])
+    c_3d_ctrl0, c_3d_ctrl1, c_3d_ctrl2, c_3d_ctrl3, c_3d_ctrl4 = st.columns([1.3, 1.4, 1.0, 1.0, 1.2])
     with c_3d_ctrl0:
         orient_choice = st.radio(
             "Orientacja naczynia:",
@@ -2412,13 +2483,19 @@ def render_biplane_results_content(active_pid, pair, series_map):
         orient_param = "vertical" if "Wertykalnie" in orient_choice else "horizontal"
     with c_3d_ctrl1:
         color_mode = st.radio(
-            "Mapa kolorów:",
-            options=["Średnica [mm]", "Rozstrzeń (x Ref)"],
+            "Kolory naczynia 3D:",
+            options=["🎯 Strefy kliniczne (bez gradientu)", "Średnica [mm]", "Rozstrzeń (gradient)"],
             index=0,
             horizontal=True,
-            key=f"caa_3d_colormode_{pair['aha_code']}"
+            key=f"caa_3d_colormode_{pair['aha_code']}",
+            help="Strefy kliniczne: 🟢 Zielony = Zdrowe naczynie (< 1.2x Ref) | 🟡 Żółty = Szyja tętniaka (1.2x - 1.4x Ref) | 🔴 Czerwony = Worek tętniaka (≥ 1.4x Ref)"
         )
-        col_param = "diameter" if "Średnica" in color_mode else "dilation"
+        if "Strefy" in color_mode:
+            col_param = "zones"
+        elif "Średnica" in color_mode:
+            col_param = "diameter"
+        else:
+            col_param = "dilation"
     with c_3d_ctrl2:
         show_ghost_ref = st.checkbox("Pokaż Ref (Ghost)", value=True, key=f"caa_3d_ref_{pair['aha_code']}", help="Półprzezroczysta powłoka pokazująca referencyjny kształt zdrowego naczynia")
     with c_3d_ctrl3:
