@@ -72,13 +72,18 @@ def _seg_codes(system_name):
     return []
 
 def safe_display_image(img, caption=None):
+    if img is None:
+        return
     try:
         st.image(img, caption=caption, use_column_width=True)
-    except TypeError:
+    except Exception:
         try:
             st.image(img, caption=caption, use_container_width=True)
-        except TypeError:
-            st.image(img, caption=caption)
+        except Exception:
+            try:
+                st.image(img, caption=caption)
+            except Exception as e:
+                print(f"safe_display_image error: {e}")
 
 # Storage base for Sylwia's uploaded patient cases
 ANEURYSM_STORAGE_DIR = "/var/www/analiza-dicom/aneurysm_storage/sylwia"
@@ -1537,6 +1542,62 @@ def get_preview_image(dicom_path, start_ix, best_ix, end_ix, file_size=None):
     except Exception as e:
         return None
 
+def analyze_series_flow_fast(pixel_array):
+    """
+    Ultra-fast in-memory contrast flow detection directly from pixel_array in RAM.
+    Avoids re-reading multi-frame DICOM from disk.
+    """
+    try:
+        if pixel_array is None:
+            return 0, 0, 0
+        if len(pixel_array.shape) == 2:
+            return 0, 0, 0
+        n_slices = pixel_array.shape[0]
+        if n_slices <= 1:
+            return 0, 0, 0
+        step = 1 if n_slices <= 25 else 2
+        indices = list(range(0, n_slices, step))
+        scores = []
+        for i in indices:
+            fr = pixel_array[i]
+            h, w = fr.shape[:2]
+            crop = fr[h//4:3*h//4, w//4:3*w//4]
+            scores.append(float(np.var(crop)))
+        best_sub = int(np.argmax(scores))
+        best_ix = indices[best_sub]
+        start_ix = max(0, best_ix - 10)
+        end_ix = n_slices - 1
+        return best_ix, start_ix, end_ix
+    except Exception:
+        mid = (pixel_array.shape[0] // 2) if pixel_array is not None and hasattr(pixel_array, 'shape') and len(pixel_array.shape) > 0 else 0
+        return mid, 0, max(0, (pixel_array.shape[0] - 1) if pixel_array is not None and hasattr(pixel_array, 'shape') and len(pixel_array.shape) > 0 else 0)
+
+def get_preview_strip(pixel_array, s_ix, b_ix, e_ix):
+    """
+    Generates 3-panel strip (Start | Peak QCA | Last Frame) in-memory in ~1-2ms.
+    """
+    try:
+        if pixel_array is None:
+            return None
+        if len(pixel_array.shape) == 2:
+            f = get_norm_512(pixel_array)
+            return np.concatenate((f, f, f), axis=1)
+        n = pixel_array.shape[0]
+        if n == 0:
+            return None
+        s_ix = max(0, min(n - 1, s_ix))
+        b_ix = max(0, min(n - 1, b_ix))
+        e_ix = max(0, min(n - 1, e_ix))
+        f1 = get_norm_512(pixel_array[s_ix])
+        f2 = get_norm_512(pixel_array[b_ix])
+        f3 = get_norm_512(pixel_array[e_ix])
+        if f1 is None or f2 is None or f3 is None:
+            return None
+        return np.concatenate((f1, f2, f3), axis=1)
+    except Exception as e:
+        print(f"Error in preview strip: {e}")
+        return None
+
 def get_best_or_saved_frame(active_pid, dfp, d_meta):
     """
     Returns the optimal frame index for a series:
@@ -1572,9 +1633,13 @@ def get_best_or_saved_frame(active_pid, dfp, d_meta):
         st.session_state[frame_key] = chosen_fr
         return chosen_fr
 
-    # 3. Peak QCA flow analysis
-    fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
-    b_ix, _, _ = analyze_series_flow(dfp, fsize)
+    # 3. Peak QCA flow analysis (fast in-memory)
+    pixels = d_meta.get("pixels")
+    if pixels is not None and len(pixels) > 0:
+        b_ix, _, _ = analyze_series_flow_fast(pixels)
+    else:
+        fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
+        b_ix, _, _ = analyze_series_flow(dfp, fsize)
     if b_ix <= 0 and n_frames > 1:
         b_ix = min(int(n_frames / 2), n_frames - 1)
     chosen_fr = max(0, min(b_ix, n_frames - 1))
@@ -1698,9 +1763,14 @@ def render_series_card(active_pid, name, dfp, d_meta, series_meta, meta_store_ke
                 norm_f = get_norm_512(d_meta["pixels"][min(int(d_meta['total_frames']/2), d_meta['total_frames']-1)])
                 safe_display_image(norm_f, caption=f"Klatka środkowa")
         else:
-            fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
-            b_ix, s_ix, e_ix = analyze_series_flow(dfp, fsize)
-            combined = get_preview_image(dfp, s_ix, b_ix, e_ix, fsize)
+            pixels = d_meta.get("pixels")
+            if pixels is not None and len(pixels) > 0:
+                b_ix, s_ix, e_ix = analyze_series_flow_fast(pixels)
+                combined = get_preview_strip(pixels, s_ix, b_ix, e_ix)
+            else:
+                fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
+                b_ix, s_ix, e_ix = analyze_series_flow(dfp, fsize)
+                combined = get_preview_image(dfp, s_ix, b_ix, e_ix, fsize)
             if combined is not None:
                 safe_display_image(Image.fromarray(combined), caption=f"Start (Klatka {s_ix+1}) | Peak QCA (Klatka {b_ix+1}) | Last Frame (Klatka {e_ix+1})")
             else:
@@ -1724,8 +1794,12 @@ def render_series_card(active_pid, name, dfp, d_meta, series_meta, meta_store_ke
         with c_b3:
             if st.button("🎯 Obrysuj tę projekcję", key=f"btn_delineate_{active_pid}_{file_id}", type="primary", use_container_width=True):
                 st.session_state["caa_active_series_name"] = name
-                fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
-                b_ix, _, _ = analyze_series_flow(dfp, fsize)
+                pixels = d_meta.get("pixels")
+                if pixels is not None and len(pixels) > 0:
+                    b_ix, _, _ = analyze_series_flow_fast(pixels)
+                else:
+                    fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
+                    b_ix, _, _ = analyze_series_flow(dfp, fsize)
                 st.session_state[f"caa_frame_{active_pid}_{os.path.basename(dfp)}"] = b_ix
                 st.session_state["caa_target_view"] = "single_delineation"
                 st.rerun(scope="app")
@@ -2528,8 +2602,12 @@ def render_artery_segmentation_widget(active_pid, p_name, p_dfp, p_meta, tag="P1
 
     with c_sl4:
         st.markdown(f"**Klatka {frame_slider + 1} / {n_frames}**")
-        fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
-        b_ix, _, _ = analyze_series_flow(dfp, fsize)
+        pixels = d_meta.get("pixels")
+        if pixels is not None and len(pixels) > 0:
+            b_ix, _, _ = analyze_series_flow_fast(pixels)
+        else:
+            fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
+            b_ix, _, _ = analyze_series_flow(dfp, fsize)
         if b_ix > 0 and b_ix != frame_slider:
             if st.button(f"🎯 Peak QCA ({b_ix+1})", key=f"btn_peak_{tag}_{active_pid}_{os.path.basename(dfp)}", use_container_width=True, help="Skocz do klatki optymalnego kontrastu"):
                 st.session_state[frame_key] = b_ix
