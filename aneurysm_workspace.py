@@ -472,8 +472,7 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", show_ref=True
         ),
         scene=dict(
             xaxis=dict(
-                title="X: Proj 1 (mm)",
-                titlefont=dict(color="#94a3b8", size=11),
+                title=dict(text="X: Proj 1 (mm)", font=dict(color="#94a3b8", size=11)),
                 tickfont=dict(color="#64748b", size=9),
                 backgroundcolor="#0f172a",
                 gridcolor="#334155",
@@ -481,8 +480,7 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", show_ref=True
                 range=[-max_r * 1.5, max_r * 1.5]
             ),
             yaxis=dict(
-                title="Y: Proj 2 (mm)",
-                titlefont=dict(color="#94a3b8", size=11),
+                title=dict(text="Y: Proj 2 (mm)", font=dict(color="#94a3b8", size=11)),
                 tickfont=dict(color="#64748b", size=9),
                 backgroundcolor="#0f172a",
                 gridcolor="#334155",
@@ -490,8 +488,7 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", show_ref=True
                 range=[-max_r * 1.5, max_r * 1.5]
             ),
             zaxis=dict(
-                title="Z: Oś naczynia (mm)",
-                titlefont=dict(color="#94a3b8", size=11),
+                title=dict(text="Z: Oś naczynia (mm)", font=dict(color="#94a3b8", size=11)),
                 tickfont=dict(color="#64748b", size=9),
                 backgroundcolor="#0b1120",
                 gridcolor="#334155",
