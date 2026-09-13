@@ -2398,6 +2398,21 @@ def render_single_delineation_view(active_pid, series_map):
                 st.session_state["caa_target_view"] = "gallery"
                 st.rerun()
 
+def _cb_step_frame(f_key, s_key, delta, max_val):
+    cur = st.session_state.get(f_key, 0)
+    new_val = max(0, min(max_val, int(cur) + delta))
+    st.session_state[f_key] = new_val
+    st.session_state[s_key] = new_val
+
+def _cb_jump_frame(f_key, s_key, target_val, max_val):
+    new_val = max(0, min(max_val, int(target_val)))
+    st.session_state[f_key] = new_val
+    st.session_state[s_key] = new_val
+
+def _cb_slider_frame(f_key, s_key):
+    if s_key in st.session_state:
+        st.session_state[f_key] = st.session_state[s_key]
+
 def render_catheter_calibration_widget(active_pid, p_name, p_dfp, p_meta, tag="P1"):
     dfp = p_dfp
     d_meta = p_meta
@@ -2407,7 +2422,9 @@ def render_catheter_calibration_widget(active_pid, p_name, p_dfp, p_meta, tag="P
         
     c_sl1, c_sl2, c_sl3, c_sl4 = st.columns([3.2, 0.6, 0.6, 1.6])
     cal_slider_key = f"sl_frame_cal_{tag}_{active_pid}_{os.path.basename(dfp)}"
-    if cal_slider_key in st.session_state and st.session_state[cal_slider_key] != frame_slider:
+    if cal_slider_key not in st.session_state:
+        st.session_state[cal_slider_key] = frame_slider
+    elif st.session_state[cal_slider_key] != frame_slider:
         st.session_state[cal_slider_key] = frame_slider
 
     with c_sl1:
@@ -2415,32 +2432,32 @@ def render_catheter_calibration_widget(active_pid, p_name, p_dfp, p_meta, tag="P
             f"🎬 Klatka do kalibracji ({tag}):",
             min_value=0,
             max_value=max(0, n_frames - 1),
-            value=frame_slider,
             key=cal_slider_key,
+            on_change=_cb_slider_frame,
+            args=(frame_key, cal_slider_key),
             help="Przesuń suwak, aby wybrać klatkę z najlepiej widocznym cewnikiem"
         )
-        if new_frame != frame_slider:
-            st.session_state[frame_key] = new_frame
-            frame_slider = new_frame
-            st.rerun()
+        frame_slider = new_frame
             
     with c_sl2:
         st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-        if st.button("◀️", key=f"btn_prev_cal_fr_{tag}_{active_pid}_{os.path.basename(dfp)}", help="Poprzednia klatka (-1)"):
-            if frame_slider > 0:
-                st.session_state[frame_key] = frame_slider - 1
-                if cal_slider_key in st.session_state:
-                    st.session_state[cal_slider_key] = frame_slider - 1
-                st.rerun()
+        st.button(
+            "◀️",
+            key=f"btn_prev_cal_fr_{tag}_{active_pid}_{os.path.basename(dfp)}",
+            on_click=_cb_step_frame,
+            args=(frame_key, cal_slider_key, -1, max(0, n_frames - 1)),
+            help="Poprzednia klatka (-1)"
+        )
                 
     with c_sl3:
         st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-        if st.button("▶️", key=f"btn_next_cal_fr_{tag}_{active_pid}_{os.path.basename(dfp)}", help="Następna klatka (+1)"):
-            if frame_slider < n_frames - 1:
-                st.session_state[frame_key] = frame_slider + 1
-                if cal_slider_key in st.session_state:
-                    st.session_state[cal_slider_key] = frame_slider + 1
-                st.rerun()
+        st.button(
+            "▶️",
+            key=f"btn_next_cal_fr_{tag}_{active_pid}_{os.path.basename(dfp)}",
+            on_click=_cb_step_frame,
+            args=(frame_key, cal_slider_key, 1, max(0, n_frames - 1)),
+            help="Następna klatka (+1)"
+        )
 
     with c_sl4:
         st.markdown(f"**Klatka {frame_slider + 1} / {n_frames}**")
@@ -2565,7 +2582,9 @@ def render_artery_segmentation_widget(active_pid, p_name, p_dfp, p_meta, tag="P1
     # Frame selection bar: slider + step buttons + Peak QCA
     c_sl1, c_sl2, c_sl3, c_sl4 = st.columns([3.2, 0.6, 0.6, 1.6])
     seg_slider_key = f"sl_frame_seg_{tag}_{active_pid}_{os.path.basename(dfp)}"
-    if seg_slider_key in st.session_state and st.session_state[seg_slider_key] != frame_slider:
+    if seg_slider_key not in st.session_state:
+        st.session_state[seg_slider_key] = frame_slider
+    elif st.session_state[seg_slider_key] != frame_slider:
         st.session_state[seg_slider_key] = frame_slider
 
     with c_sl1:
@@ -2573,32 +2592,32 @@ def render_artery_segmentation_widget(active_pid, p_name, p_dfp, p_meta, tag="P1
             f"🎬 Przesuń, aby wybrać klatkę do obrysowania ({tag}):",
             min_value=0,
             max_value=max(0, n_frames - 1),
-            value=frame_slider,
             key=seg_slider_key,
+            on_change=_cb_slider_frame,
+            args=(frame_key, seg_slider_key),
             help="Przesuń suwak, aby wybrać klatkę z optymalnym wypełnieniem tętnicy kontrastem"
         )
-        if new_frame != frame_slider:
-            st.session_state[frame_key] = new_frame
-            frame_slider = new_frame
-            st.rerun()
+        frame_slider = new_frame
             
     with c_sl2:
         st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-        if st.button("◀️", key=f"btn_prev_fr_{tag}_{active_pid}_{os.path.basename(dfp)}", help="Poprzednia klatka (-1)"):
-            if frame_slider > 0:
-                st.session_state[frame_key] = frame_slider - 1
-                if seg_slider_key in st.session_state:
-                    st.session_state[seg_slider_key] = frame_slider - 1
-                st.rerun()
+        st.button(
+            "◀️",
+            key=f"btn_prev_fr_{tag}_{active_pid}_{os.path.basename(dfp)}",
+            on_click=_cb_step_frame,
+            args=(frame_key, seg_slider_key, -1, max(0, n_frames - 1)),
+            help="Poprzednia klatka (-1)"
+        )
                 
     with c_sl3:
         st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-        if st.button("▶️", key=f"btn_next_fr_{tag}_{active_pid}_{os.path.basename(dfp)}", help="Następna klatka (+1)"):
-            if frame_slider < n_frames - 1:
-                st.session_state[frame_key] = frame_slider + 1
-                if seg_slider_key in st.session_state:
-                    st.session_state[seg_slider_key] = frame_slider + 1
-                st.rerun()
+        st.button(
+            "▶️",
+            key=f"btn_next_fr_{tag}_{active_pid}_{os.path.basename(dfp)}",
+            on_click=_cb_step_frame,
+            args=(frame_key, seg_slider_key, 1, max(0, n_frames - 1)),
+            help="Następna klatka (+1)"
+        )
 
     with c_sl4:
         st.markdown(f"**Klatka {frame_slider + 1} / {n_frames}**")
@@ -2609,11 +2628,14 @@ def render_artery_segmentation_widget(active_pid, p_name, p_dfp, p_meta, tag="P1
             fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
             b_ix, _, _ = analyze_series_flow(dfp, fsize)
         if b_ix > 0 and b_ix != frame_slider:
-            if st.button(f"🎯 Peak QCA ({b_ix+1})", key=f"btn_peak_{tag}_{active_pid}_{os.path.basename(dfp)}", use_container_width=True, help="Skocz do klatki optymalnego kontrastu"):
-                st.session_state[frame_key] = b_ix
-                if seg_slider_key in st.session_state:
-                    st.session_state[seg_slider_key] = b_ix
-                st.rerun()
+            st.button(
+                f"🎯 Peak QCA ({b_ix+1})",
+                key=f"btn_peak_{tag}_{active_pid}_{os.path.basename(dfp)}",
+                on_click=_cb_jump_frame,
+                args=(frame_key, seg_slider_key, b_ix, max(0, n_frames - 1)),
+                use_container_width=True,
+                help="Skocz do klatki optymalnego kontrastu"
+            )
         else:
             st.caption(f"Kąty: {d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°")
     
