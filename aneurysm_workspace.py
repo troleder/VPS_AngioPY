@@ -3061,9 +3061,15 @@ def render_biplane_results_content(active_pid, pair, series_map):
                 "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
             }
 
-            # Opcjonalny upload raportu PDF do Firebase Storage
+            # Upload raportu PDF do Firebase Storage
             try:
                 bucket = st.session_state.get("firebase_bucket")
+                if bucket is None:
+                    try:
+                        from firebase_admin import storage
+                        bucket = storage.bucket()
+                    except Exception as s_err:
+                        print(f"Could not get storage bucket directly: {s_err}")
                 if bucket is not None and len(pdf_doc_bytes) > 0:
                     pdf_filename_cloud = f"Raport_CAA_3D_{active_pid}_{pair.get('aha_code', 'seg')}_{int(time.time())}.pdf"
                     blob = bucket.blob(f"aneurysm_reports/{pdf_filename_cloud}")
