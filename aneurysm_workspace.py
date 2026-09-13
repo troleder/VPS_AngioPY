@@ -2145,13 +2145,6 @@ def render_coronary_aneurysm_workspace():
 
     # Top-level view router
     view_key = f"caa_view_mode_{active_pid}"
-    
-    # Auto-reset previously forced defaults for test patient once
-    auto_reset_key = f"caa_auto_reset_done_{active_pid}_v3"
-    if active_pid == "test" and auto_reset_key not in st.session_state:
-        st.session_state[auto_reset_key] = True
-        reset_patient_workspace(active_pid)
-        st.rerun()
 
     if "caa_target_view" in st.session_state:
         st.session_state[view_key] = st.session_state.pop("caa_target_view")
