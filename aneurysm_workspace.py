@@ -2807,6 +2807,7 @@ def render_biplane_results_content(active_pid, pair, series_map):
                 "dilation_ratio_1": simp["dilation_ratio_1"],
                 "dilation_ratio_2": simp["dilation_ratio_2"],
                 "length_mm": simp["L"],
+                "aneurysm_len_mm": simp.get("aneurysm_len", simp["L"]),
                 "d1_slices_mm": simp.get("D1_slices", []),
                 "d2_slices_mm": simp.get("D2_slices", []),
                 "s_slices_mm": simp.get("s_slices", []),
@@ -2821,12 +2822,29 @@ def render_biplane_results_content(active_pid, pair, series_map):
                 "annotator": st.session_state.user.get("email", "syl.iwanczyk@gmail.com") if "user" in st.session_state else "syl.iwanczyk@gmail.com",
                 "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
             }
+
+            # Opcjonalny upload raportu PDF do Firebase Storage
+            try:
+                bucket = st.session_state.get("firebase_bucket")
+                if bucket is not None and len(pdf_doc_bytes) > 0:
+                    pdf_filename_cloud = f"Raport_CAA_3D_{active_pid}_{pair.get('aha_code', 'seg')}_{int(time.time())}.pdf"
+                    blob = bucket.blob(f"aneurysm_reports/{pdf_filename_cloud}")
+                    blob.upload_from_string(pdf_doc_bytes, content_type="application/pdf")
+                    try:
+                        blob.make_public()
+                        record["pdf_url"] = blob.public_url
+                    except Exception:
+                        record["pdf_url"] = blob.generate_signed_url(expiration=datetime.timedelta(days=365))
+            except Exception as fe:
+                print(f"Error uploading PDF to Firebase: {fe}")
+
             try:
                 from firebase_admin import firestore
                 db = firestore.client()
                 doc_id = f"{active_pid}_{vessel}_{aha_segment.replace(' ', '_')}_{int(time.time())}"
                 db.collection("aneurysm_results").document(doc_id).set(record)
-                st.success(f"✅ Zapisano pomyślnie badanie tętniaka dla pacjenta **{active_pid}** ({aha_segment}) w kolekcji 'aneurysm_results'!")
+                pdf_notice = " wraz z raportem PDF" if record.get("pdf_url") else ""
+                st.success(f"✅ Zapisano pomyślnie badanie tętniaka dla pacjenta **{active_pid}** ({aha_segment}){pdf_notice} w kolekcji Firestore 'aneurysm_results'!")
             except Exception as e:
                 st.error(f"Błąd zapisu do bazy danych: {e}")
                 
