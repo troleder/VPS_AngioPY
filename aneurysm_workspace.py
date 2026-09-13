@@ -1079,7 +1079,7 @@ def render_coronary_aneurysm_workspace():
             with c_bp_dim1:
                 st.markdown(f"**Projekcja 1:** `{d_meta['series_desc']}` ({d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°)")
                 st.markdown(f"**Projekcja 2:** `{d_meta2['series_desc']}` ({d_meta2['primary_angle']:+.1f}° / {d_meta2['secondary_angle']:+.1f}°)")
-                st.markdown(f"**Różnica kątów w przestrzeni:** **{angle_diff:.1f}°** " + ("✅ (Spełnia warunek $\ge 30^\circ$)" if angle_diff>=30 else "⚠️ (< 30°)"))
+                st.markdown(f"**Różnica kątów w przestrzeni:** **{angle_diff:.1f}°** " + ("✅ (Spełnia warunek ≥ 30°)" if angle_diff>=30 else "⚠️ (< 30°)"))
                 
                 d2_max_diam = st.number_input("Max Diameter w Projekcji 2 [mm]:", min_value=0.5, max_value=40.0, value=float(max_diam), step=0.1, key="caa_d2_max")
                 d2_ref = st.number_input("Referencja w Projekcji 2 [mm]:", min_value=0.5, max_value=15.0, value=float(interp_ref), step=0.1, key="caa_d2_ref")
