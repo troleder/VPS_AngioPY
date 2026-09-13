@@ -207,23 +207,33 @@ def simpsons_volume_biplane(d1_max, d2_max, ref1, ref2, length_mm, n_slices=20):
     
     return total_volume_mm3, excess_volume_mm3
 
-def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, thick2, cum_dist2, prox2, dist2, max2, n_slices=30):
+def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, thick2, cum_dist2, prox2, dist2, max2, n_slices=30, is_ostial=False, ostial_ref_override=None):
     """
     Computes true biplane 3D lumen volume directly from two segmented projection profiles:
+    - Supports ostial aneurysms (starting directly at the ostium without proximal healthy reference)
     - Normalizes centerline path length between proximal and distal landmarks
     - Evaluates cross-sectional orthogonal diameters D1(s) and D2(s) along the length
     - Evaluates reference vessel diameters Dref1(s) and Dref2(s)
     - Integrates elliptical slice areas: A(s) = (pi / 4) * D1(s) * D2(s)
-    - Computes total volume and excess aneurysm pouch volume
+    - Performs full clinical zone decomposition:
+      * Segment Ref-Ref: total length & total volume
+      * Healthy vessel (< 1.2x Ref): length & volume
+      * Intermediate dilation / neck (1.2x - 1.4x Ref): length, total & excess volume
+      * True aneurysm sac (>= 1.4x Ref): length, total & excess volume
+      * Combined aneurysm lesion (>= 1.2x Ref): combined length & total excess volume
     - Computes cross-sectional eccentricity and morphological ratios
     """
     try:
         # Segment 1
-        i_s1, i_e1 = min(prox1, dist1), max(prox1, dist1)
-        i_s1 = max(0, min(len(thick1) - 1, i_s1))
-        i_e1 = max(0, min(len(thick1) - 1, i_e1))
-        if i_s1 == i_e1:
-            i_s1, i_e1 = 0, len(thick1) - 1
+        if is_ostial:
+            i_s1 = 0
+            i_e1 = max(1, min(len(thick1) - 1, int(dist1)))
+        else:
+            i_s1, i_e1 = min(prox1, dist1), max(prox1, dist1)
+            i_s1 = max(0, min(len(thick1) - 1, i_s1))
+            i_e1 = max(0, min(len(thick1) - 1, i_e1))
+            if i_s1 == i_e1:
+                i_s1, i_e1 = 0, len(thick1) - 1
             
         L1 = float(abs(cum_dist1[i_e1] - cum_dist1[i_s1]))
         if L1 < 0.5: L1 = 5.0
@@ -232,16 +242,27 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
         u1 = np.linspace(0.0, 1.0, len(seg_thick1))
         u_eval = np.linspace(0.0, 1.0, n_slices + 1)
         D1 = np.interp(u_eval, u1, seg_thick1)
-        ref1_prox, ref1_dist = float(D1[0]), float(D1[-1])
+        ref1_dist = float(D1[-1])
+        if is_ostial:
+            if ostial_ref_override is not None and ostial_ref_override > 0:
+                ref1_prox = float(ostial_ref_override)
+            else:
+                ref1_prox = ref1_dist
+        else:
+            ref1_prox = float(D1[0])
         ref1_mean = (ref1_prox + ref1_dist) / 2.0
         Dref1 = ref1_prox + u_eval * (ref1_dist - ref1_prox)
 
         # Segment 2
-        i_s2, i_e2 = min(prox2, dist2), max(prox2, dist2)
-        i_s2 = max(0, min(len(thick2) - 1, i_s2))
-        i_e2 = max(0, min(len(thick2) - 1, i_e2))
-        if i_s2 == i_e2:
-            i_s2, i_e2 = 0, len(thick2) - 1
+        if is_ostial:
+            i_s2 = 0
+            i_e2 = max(1, min(len(thick2) - 1, int(dist2)))
+        else:
+            i_s2, i_e2 = min(prox2, dist2), max(prox2, dist2)
+            i_s2 = max(0, min(len(thick2) - 1, i_s2))
+            i_e2 = max(0, min(len(thick2) - 1, i_e2))
+            if i_s2 == i_e2:
+                i_s2, i_e2 = 0, len(thick2) - 1
             
         L2 = float(abs(cum_dist2[i_e2] - cum_dist2[i_s2]))
         if L2 < 0.5: L2 = 5.0
@@ -249,7 +270,14 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
         seg_thick2 = thick2[i_s2:i_e2+1]
         u2 = np.linspace(0.0, 1.0, len(seg_thick2))
         D2 = np.interp(u_eval, u2, seg_thick2)
-        ref2_prox, ref2_dist = float(D2[0]), float(D2[-1])
+        ref2_dist = float(D2[-1])
+        if is_ostial:
+            if ostial_ref_override is not None and ostial_ref_override > 0:
+                ref2_prox = float(ostial_ref_override)
+            else:
+                ref2_prox = ref2_dist
+        else:
+            ref2_prox = float(D2[0])
         ref2_mean = (ref2_prox + ref2_dist) / 2.0
         Dref2 = ref2_prox + u_eval * (ref2_dist - ref2_prox)
 
@@ -259,29 +287,52 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
         areas = (np.pi / 4.0) * D1 * D2
         ref_areas = (np.pi / 4.0) * Dref1 * Dref2
 
-        # Kliniczna reguła odcięcia: do 1.2x to fizjologiczna norma (zdrowe naczynie).
-        # Właściwy tętniak / rozstrzeń (szyja i worek) to strefa >= 1.2x.
-        # Tylko dla plastrów >= 1.2x liczymy nadmiarową objętość tętniaka:
         mean_D_slice = (D1 + D2) / 2.0
         mean_ref_slice = np.maximum(0.1, (Dref1 + Dref2) / 2.0)
         dilation_ratio_slice = mean_D_slice / mean_ref_slice
-        excess_areas = np.where(dilation_ratio_slice >= 1.2, np.maximum(0.0, areas - ref_areas), 0.0)
 
-        weights = np.ones(len(areas))
-        weights[1:-1:2] = 4.0
-        weights[2:-2:2] = 2.0
+        # Interval-by-interval clinical zone decomposition
+        L_healthy = 0.0
+        L_neck = 0.0
+        L_sac = 0.0
 
-        total_vol = (ds / 3.0) * float(np.sum(weights * areas))
-        ref_vol = (ds / 3.0) * float(np.sum(weights * ref_areas))
-        excess_vol = (ds / 3.0) * float(np.sum(weights * excess_areas))
+        V_healthy = 0.0
+        V_neck_total = 0.0
+        V_neck_excess = 0.0
+        V_sac_total = 0.0
+        V_sac_excess = 0.0
+        total_vol = 0.0
+        ref_vol = 0.0
 
-        dilated_mask = (dilation_ratio_slice >= 1.2)
-        if np.any(dilated_mask):
-            aneurysm_indices = np.where(dilated_mask)[0]
-            aneurysm_len = float((aneurysm_indices[-1] - aneurysm_indices[0]) / n_slices * L)
-            aneurysm_len = max(0.5, round(aneurysm_len, 1))
-        else:
-            aneurysm_len = 0.0
+        for k in range(n_slices):
+            r_mid = float((dilation_ratio_slice[k] + dilation_ratio_slice[k+1]) / 2.0)
+            a_mid = float((areas[k] + areas[k+1]) / 2.0)
+            a_ref_mid = float((ref_areas[k] + ref_areas[k+1]) / 2.0)
+            
+            dV = a_mid * ds
+            dV_ref = a_ref_mid * ds
+            dV_excess = max(0.0, dV - dV_ref)
+
+            total_vol += dV
+            ref_vol += dV_ref
+
+            if r_mid >= 1.4:
+                # Strefa 3: Właściwy worek tętniaka (>= 1.4x Ref)
+                L_sac += ds
+                V_sac_total += dV
+                V_sac_excess += dV_excess
+            elif r_mid >= 1.2:
+                # Strefa 2: Poszerzenie / Szyja (1.2x - 1.4x Ref)
+                L_neck += ds
+                V_neck_total += dV
+                V_neck_excess += dV_excess
+            else:
+                # Strefa 1: Zdrowe naczynie (< 1.2x Ref)
+                L_healthy += ds
+                V_healthy += dV
+
+        excess_vol = V_neck_excess + V_sac_excess
+        L_lesion = L_neck + L_sac
 
         d1_max = float(np.max(D1))
         d2_max = float(np.max(D2))
@@ -293,7 +344,7 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
         dil_ratio_1 = round(d1_max / ref1_mean, 2) if ref1_mean > 0 else 1.0
         dil_ratio_2 = round(d2_max / ref2_mean, 2) if ref2_mean > 0 else 1.0
 
-        effective_len = aneurysm_len if aneurysm_len > 0 else L
+        effective_len = L_lesion if L_lesion > 0 else L
         morphology = "Wrzecionowaty (Fusiform)" if (effective_len / a >= 2.0) else "Workowaty (Saccular)"
 
         s_slices = (u_eval * L).tolist()
@@ -303,6 +354,19 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
             "total_vol": round(total_vol, 2),
             "excess_vol": round(excess_vol, 2),
             "ref_vol": round(ref_vol, 2),
+            "L_ref_ref": round(L, 2),
+            "L_healthy": round(L_healthy, 2),
+            "L_neck": round(L_neck, 2),
+            "L_sac": round(L_sac, 2),
+            "L_lesion": round(L_lesion, 2),
+            "aneurysm_len": round(L_lesion, 2),
+            "V_healthy": round(V_healthy, 2),
+            "V_neck_total": round(V_neck_total, 2),
+            "V_neck_excess": round(V_neck_excess, 2),
+            "V_sac_total": round(V_sac_total, 2),
+            "V_sac_excess": round(V_sac_excess, 2),
+            "is_ostial": bool(is_ostial),
+            "ostial_ref": round(ref1_prox, 2) if is_ostial else None,
             "d1_max": round(d1_max, 2),
             "d2_max": round(d2_max, 2),
             "ref1_mean": round(ref1_mean, 2),
@@ -310,7 +374,6 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
             "L1": round(L1, 2),
             "L2": round(L2, 2),
             "L": round(L, 2),
-            "aneurysm_len": aneurysm_len,
             "ellipticity": round(ellipticity, 2),
             "eccentricity": round(eccentricity, 2),
             "dilation_ratio_1": dil_ratio_1,
@@ -321,6 +384,7 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
             "Dref1_slices": [round(float(v), 3) for v in Dref1],
             "Dref2_slices": [round(float(v), 3) for v in Dref2],
             "s_slices": [round(float(v), 3) for v in s_slices],
+            "areas_slices": [round(float(v), 3) for v in areas],
             "max_idx_slice": max_idx_slice,
             "n_slices": n_slices
         }
@@ -840,7 +904,10 @@ def generate_aneurysm_pdf_report(active_pid, pair, p1_meta, p2_meta, angle_diff,
             rect = plt.Rectangle((0.05, 0.865), 0.90, 0.063, facecolor="#f8fafc", edgecolor="#cbd5e1", linewidth=0.8)
             fig.add_artist(rect)
             fig.text(0.07, 0.908, f"PACJENT ID: {active_pid}", fontsize=9.5, weight="bold", color="#0f172a")
-            fig.text(0.38, 0.908, f"NACZYNIE: {vessel} ({aha_segment})", fontsize=9.5, weight="bold", color="#0f172a")
+            vessel_txt = f"NACZYNIE: {vessel} ({aha_segment})"
+            if simp.get("is_ostial"):
+                vessel_txt += " [TĘTNIAK OSTIALNY]"
+            fig.text(0.38, 0.908, vessel_txt, fontsize=9.5, weight="bold", color="#0f172a")
             fig.text(0.72, 0.908, f"DATA: {today_str[:10]}", fontsize=9.5, color="#334155")
 
             p1_desc = p1_meta.get('series_desc', 'Proj 1')
@@ -882,7 +949,10 @@ def generate_aneurysm_pdf_report(active_pid, pair, p1_meta, p2_meta, angle_diff,
             ax3d.view_init(elev=12, azim=45)
             ax3d.set_box_aspect([1.0, 1.0, 2.2])
             ax3d.axis("off")
-            ax3d.set_title("Model 3D [Zielony: Zdrowe | Zółty: Szyja | Czerwony: Worek]", fontsize=7.5, color="#334155", pad=-10)
+            ax3d_lbl = "Model 3D [Zielony: Zdrowe | Zółty: Szyja | Czerwony: Worek]"
+            if simp.get("is_ostial"):
+                ax3d_lbl += " (Ostialny)"
+            ax3d.set_title(ax3d_lbl, fontsize=7.5, color="#334155", pad=-10)
 
             # Measurements Table
             ax_tbl = fig.add_axes([0.515, 0.095, 0.435, 0.395])
@@ -892,13 +962,14 @@ def generate_aneurysm_pdf_report(active_pid, pair, p1_meta, p2_meta, angle_diff,
             stenosis_txt = f"{pct_stenosis}% (MLD: {mld_val:.1f} mm)" if (has_stenosis and mld_val is not None) else "Brak"
 
             table_rows = [
-                ["Nadmiarowa objętość tętniaka (≥1.2x)", f"{simp['excess_vol']:.1f} mm³ ({simp['excess_vol']:.1f} μl)"],
-                ["Całkowita objętość naczynia (V_total)", f"{simp['total_vol']:.1f} mm³ ({simp['total_vol']:.1f} μl)"],
-                ["Objętość referencyjna (V_ref)", f"{simp['ref_vol']:.1f} mm³"],
-                ["Długość worka tętniaka (≥1.2x)", f"{simp.get('aneurysm_len', simp['L']):.1f} mm (cały: {simp['L']:.1f} mm)"],
+                ["Segment (Ref-Ref) - Dł. / V_tot", f"{simp.get('L_ref_ref', simp['L']):.1f} mm | {simp['total_vol']:.1f} mm³"],
+                ["Odcinek zdrowy (<1.2x) - Dł. / Objętość", f"{simp.get('L_healthy', 0.0):.1f} mm | {simp.get('V_healthy', 0.0):.1f} mm³"],
+                ["Poszerzenie/Szyja (1.2-1.4x) - Dł. / Nadmiar", f"{simp.get('L_neck', 0.0):.1f} mm | {simp.get('V_neck_excess', 0.0):.1f} mm³"],
+                ["Worek tętniaka (≥1.4x) - Dł. / Nadmiar", f"{simp.get('L_sac', 0.0):.1f} mm | {simp.get('V_sac_excess', 0.0):.1f} mm³"],
+                ["Łączny tętniak (≥1.2x) - Dł. / V_nadmiar", f"{simp.get('L_lesion', simp.get('aneurysm_len', simp['L'])):.1f} mm | {simp['excess_vol']:.1f} mm³ ({simp['excess_vol']:.1f} μl)"],
                 ["Maksymalna średnica Dmax (P1)", f"{simp['d1_max']:.1f} mm (Ratio: {simp['dilation_ratio_1']}x)"],
                 ["Maksymalna średnica Dmax (P2)", f"{simp['d2_max']:.1f} mm (Ratio: {simp['dilation_ratio_2']}x)"],
-                ["Średnica referencyjna uśredniona", f"{ref_avg:.1f} mm (P1: {simp['ref1_mean']:.1f} | P2: {simp['ref2_mean']:.1f})"],
+                ["Średnica ref. uśredniona", f"{ref_avg:.1f} mm" + (" [Ostialny - z dyst.]" if simp.get("is_ostial") else f" (P1: {simp['ref1_mean']:.1f} | P2: {simp['ref2_mean']:.1f})")],
                 ["3D Ekscentryczność / Eliptyczność", f"{simp['eccentricity']} / {simp['ellipticity']}"],
                 ["Morfologia tętniaka", f"{simp['morphology']}"],
                 ["Skrzeplina w świetle (Thrombus)", f"{thrombus}"],
@@ -908,8 +979,8 @@ def generate_aneurysm_pdf_report(active_pid, pair, p1_meta, p2_meta, angle_diff,
 
             table = ax_tbl.table(cellText=table_rows, colLabels=["Parametr biplanarny 3D", "Wartość pomiaru"], loc="center", cellLoc="left")
             table.auto_set_font_size(False)
-            table.set_fontsize(7.5)
-            table.scale(1.0, 1.45)
+            table.set_fontsize(7.0)
+            table.scale(1.0, 1.35)
 
             for (row, col), cell in table.get_celld().items():
                 if row == 0:
@@ -953,11 +1024,21 @@ def generate_aneurysm_csv_summary(active_pid, pair, simp, vessel="LAD", aha_segm
     writer.writerow([])
 
     writer.writerow(["PARAMETR", "WARTOŚĆ", "JEDNOSTKA"])
-    writer.writerow(["Objętość całkowita segmentu (V_total)", f"{simp.get('V_total_mm3', 0.0):.2f}", "mm3"])
-    writer.writerow(["Objętość referencyjna (V_ref)", f"{simp.get('V_ref_mm3', 0.0):.2f}", "mm3"])
-    writer.writerow(["Objętość tętniaka (nadmiar V_excess >=1.2x Ref)", f"{simp.get('V_excess_mm3', 0.0):.2f}", "mm3"])
-    writer.writerow(["Długość tętniaka (L_aneurysm >=1.2x Ref)", f"{simp.get('aneurysm_len_mm', 0.0):.2f}", "mm"])
-    writer.writerow(["Całkowita długość segmentu (L_total)", f"{simp.get('length_total_mm', 0.0):.2f}", "mm"])
+    if simp.get("is_ostial"):
+        writer.writerow(["Typ tętniaka", "Ostialny (od ujścia - brak ref. proksymalnej)", ""])
+    writer.writerow(["Całkowita długość segmentu (Ref-Ref)", f"{simp.get('L_ref_ref', simp.get('L', 0.0)):.2f}", "mm"])
+    writer.writerow(["Objętość całkowita segmentu (V_total)", f"{simp.get('total_vol', 0.0):.2f}", "mm3"])
+    writer.writerow(["Objętość referencyjna (V_ref)", f"{simp.get('ref_vol', 0.0):.2f}", "mm3"])
+    writer.writerow(["Odcinek zdrowy (<1.2x Ref) - Długość", f"{simp.get('L_healthy', 0.0):.2f}", "mm"])
+    writer.writerow(["Odcinek zdrowy (<1.2x Ref) - Objętość", f"{simp.get('V_healthy', 0.0):.2f}", "mm3"])
+    writer.writerow(["Poszerzenie / Szyja (1.2-1.4x Ref) - Długość", f"{simp.get('L_neck', 0.0):.2f}", "mm"])
+    writer.writerow(["Poszerzenie / Szyja (1.2-1.4x Ref) - Objętość całkowita", f"{simp.get('V_neck_total', 0.0):.2f}", "mm3"])
+    writer.writerow(["Poszerzenie / Szyja (1.2-1.4x Ref) - Nadmiar objętości", f"{simp.get('V_neck_excess', 0.0):.2f}", "mm3"])
+    writer.writerow(["Właściwy worek tętniaka (>=1.4x Ref) - Długość", f"{simp.get('L_sac', 0.0):.2f}", "mm"])
+    writer.writerow(["Właściwy worek tętniaka (>=1.4x Ref) - Objętość całkowita", f"{simp.get('V_sac_total', 0.0):.2f}", "mm3"])
+    writer.writerow(["Właściwy worek tętniaka (>=1.4x Ref) - Nadmiar objętości", f"{simp.get('V_sac_excess', 0.0):.2f}", "mm3"])
+    writer.writerow(["Łączny tętniak (>=1.2x Ref) - Długość (L_lesion)", f"{simp.get('L_lesion', simp.get('aneurysm_len', 0.0)):.2f}", "mm"])
+    writer.writerow(["Łączny tętniak (>=1.2x Ref) - Nadmiar objętości (V_excess)", f"{simp.get('excess_vol', 0.0):.2f}", "mm3"])
     writer.writerow(["Średnica referencyjna proksymalna", f"{simp.get('ref1_mean', 0.0):.2f}", "mm"])
     writer.writerow(["Średnica referencyjna dystalna", f"{simp.get('ref2_mean', 0.0):.2f}", "mm"])
     ref_mid = (simp.get('ref1_mean', 3.0) + simp.get('ref2_mean', 3.0)) / 2.0
@@ -2620,6 +2701,33 @@ def render_biplane_results_content(active_pid, pair, series_map):
                 st.success(f"✅ Projekcja 2 ({p2_meta['series_desc']}) jest obrysowana.")
         return False
 
+    # Opcja tętniaka ostialnego (brak referencji proksymalnej / zmiana od ujścia)
+    c_ost1, c_ost2 = st.columns([1.5, 1.2])
+    with c_ost1:
+        is_ostial = st.checkbox(
+            "🔘 Tętniak ostialny (od ujścia / brak ref. proksymalnej)",
+            value=st.session_state.get(f"caa_is_ostial_{pair['aha_code']}", False),
+            key=f"caa_is_ostial_{pair['aha_code']}",
+            help="Zaznacz, jeśli tętniak rozpoczyna się bezpośrednio od ujścia naczynia (ostium) i nie posiada zdrowego odcinka proksymalnego. Referencja proksymalna zostanie wyznaczona na podstawie referencji dystalnej lub wartości zadanej."
+        )
+    ostial_ref_override = None
+    with c_ost2:
+        if is_ostial:
+            p_dist1_idx = lm1.get("dist", prof1["dist_idx"]) if lm1 else prof1["dist_idx"]
+            p_dist2_idx = lm2.get("dist", prof2["dist_idx"]) if lm2 else prof2["dist_idx"]
+            p_dist1_idx = int(np.clip(p_dist1_idx, 0, len(prof1["thickness_mm"]) - 1))
+            p_dist2_idx = int(np.clip(p_dist2_idx, 0, len(prof2["thickness_mm"]) - 1))
+            def_dist_ref = round(float((prof1["thickness_mm"][p_dist1_idx] + prof2["thickness_mm"][p_dist2_idx]) / 2.0), 2)
+            ostial_ref_override = st.number_input(
+                "Ref. ostium [mm]:",
+                min_value=1.0,
+                max_value=12.0,
+                value=float(def_dist_ref),
+                step=0.1,
+                key=f"caa_ost_ref_ov_{pair['aha_code']}",
+                help="Średnica referencyjna na poziomie ujścia (domyślnie równa referencji dystalnej)"
+            )
+
     simp = compute_biplane_simpsons_volumetry(
         thick1=prof1["thickness_mm"],
         cum_dist1=prof1["cum_dist_mm"],
@@ -2631,7 +2739,9 @@ def render_biplane_results_content(active_pid, pair, series_map):
         prox2=lm2.get("prox", prof2["prox_idx"]) if lm2 else prof2["prox_idx"],
         dist2=lm2.get("dist", prof2["dist_idx"]) if lm2 else prof2["dist_idx"],
         max2=lm2.get("max", prof2["max_idx"]) if lm2 else prof2["max_idx"],
-        n_slices=30
+        n_slices=30,
+        is_ostial=is_ostial,
+        ostial_ref_override=ostial_ref_override
     )
     if simp is None:
         st.error("Wystąpił błąd podczas integracji numerycznej profili.")
@@ -2659,30 +2769,65 @@ def render_biplane_results_content(active_pid, pair, series_map):
         st.markdown(f"📏 Dmax: **{simp['d2_max']:.1f} mm** | Ref: **{simp['ref2_mean']:.1f} mm** | Ratio: **{simp['dilation_ratio_2']}x** | L2: **{simp['L2']:.1f} mm**")
         
     st.markdown("---")
+    ost_badge = "<span style='background-color: #b91c1c; color: white; padding: 3px 8px; border-radius: 4px; font-size: 13px; margin-left: 10px;'>TĘTNIAK OSTIALNY (OD UJŚCIA)</span>" if simp.get("is_ostial") else ""
     st.markdown(f"""
     <div style='background-color: #042f2e; border: 1px solid #0f766e; border-left: 6px solid #14b8a6; padding: 16px 20px; border-radius: 8px; margin-bottom: 16px;'>
         <div style='font-size: 15px; font-weight: 700; color: #2dd4bf;'>
-            📐 WYNIKI OBJĘTOŚCI 3D SIMPSONA (Z OBU RZECZYWISTYCH OBRYSÓW):
+            📐 WYNIKI OBJĘTOŚCI 3D SIMPSONA (Z OBU RZECZYWISTYCH OBRYSÓW): {ost_badge}
         </div>
         <div style='font-size: 28px; font-weight: 800; color: #5eead4; margin-top: 4px;'>
             {simp['total_vol']:.1f} mm³ <span style='font-size: 16px; font-weight: normal; color: #ccfbf1;'>({simp['total_vol']:.1f} μl)</span>
         </div>
         <div style='font-size: 15px; color: #a7f3d0; margin-top: 6px;'>
-            • Nadmiarowa objętość tętniaka (≥ 1.2x Ref): <b>{simp['excess_vol']:.1f} mm³</b> ({simp['excess_vol']:.1f} μl)<br/>
-            • Długość właściwego worka tętniaka (≥ 1.2x Ref): <b>{simp.get('aneurysm_len', simp['L']):.1f} mm</b> (cały segment: {simp['L']:.1f} mm)<br/>
-            • Objętość zdrowego naczynia referencyjnego: <b>{simp['ref_vol']:.1f} mm³</b><br/>
-            • Różnica kątów w przestrzeni: <b>{angle_diff:.1f}°</b> {"✅ (Spełnia warunek ≥ 30°)" if angle_diff>=30 else "⚠️ (< 30°)"}
+            • <b>Całkowita długość segmentu (Ref–Ref):</b> {simp['L_ref_ref']:.1f} mm (Objętość całkowita: {simp['total_vol']:.1f} mm³ | V_ref: {simp['ref_vol']:.1f} mm³)<br/>
+            • <b>Łączny tętniak (≥ 1.2x Ref):</b> Długość: <b>{simp['L_lesion']:.1f} mm</b> | Nadmiarowa objętość: <b>{simp['excess_vol']:.1f} mm³</b> ({simp['excess_vol']:.1f} μl)<br/>
+            • <b>Różnica kątów w przestrzeni:</b> {angle_diff:.1f}° {"✅ (Spełnia warunek ≥ 30°)" if angle_diff>=30 else "⚠️ (< 30°)"}
         </div>
     </div>
     """, unsafe_allow_html=True)
-    
+
+    st.markdown("##### 📏 Dekompozycja długości i objętości stref naczynia:")
+    c_z1, c_z2, c_z3, c_z4 = st.columns(4)
+    with c_z1:
+        st.markdown(f"""
+        <div style='background: #0f172a; border-top: 3px solid #38bdf8; border-radius: 6px; padding: 12px; height: 100%;'>
+            <div style='font-size: 11px; color: #94a3b8; font-weight: 700;'>SEGMENT (REF-REF)</div>
+            <div style='font-size: 19px; color: #f8fafc; font-weight: 700; margin-top: 2px;'>{simp['L_ref_ref']:.1f} mm</div>
+            <div style='font-size: 12px; color: #cbd5e1; margin-top: 2px;'>V_całkowita: <b>{simp['total_vol']:.1f} mm³</b></div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c_z2:
+        st.markdown(f"""
+        <div style='background: #0f172a; border-top: 3px solid #22c55e; border-radius: 6px; padding: 12px; height: 100%;'>
+            <div style='font-size: 11px; color: #4ade80; font-weight: 700;'>🟢 ZDROWE (&lt;1.2x)</div>
+            <div style='font-size: 19px; color: #f8fafc; font-weight: 700; margin-top: 2px;'>{simp['L_healthy']:.1f} mm</div>
+            <div style='font-size: 12px; color: #86efac; margin-top: 2px;'>V_zdrowe: <b>{simp['V_healthy']:.1f} mm³</b></div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c_z3:
+        st.markdown(f"""
+        <div style='background: #0f172a; border-top: 3px solid #f59e0b; border-radius: 6px; padding: 12px; height: 100%;'>
+            <div style='font-size: 11px; color: #fde047; font-weight: 700;'>🟡 SZYJA/POSZERZENIE (1.2-1.4x)</div>
+            <div style='font-size: 19px; color: #f8fafc; font-weight: 700; margin-top: 2px;'>{simp['L_neck']:.1f} mm</div>
+            <div style='font-size: 12px; color: #fde68a; margin-top: 2px;'>Nadmiar V: <b>{simp['V_neck_excess']:.1f} mm³</b></div>
+        </div>
+        """, unsafe_allow_html=True)
+    with c_z4:
+        st.markdown(f"""
+        <div style='background: #0f172a; border-top: 3px solid #ef4444; border-radius: 6px; padding: 12px; height: 100%;'>
+            <div style='font-size: 11px; color: #fca5a5; font-weight: 700;'>🔴 WOREK TĘTNIAKA (&ge;1.4x)</div>
+            <div style='font-size: 19px; color: #f8fafc; font-weight: 700; margin-top: 2px;'>{simp['L_sac']:.1f} mm</div>
+            <div style='font-size: 12px; color: #fecaca; margin-top: 2px;'>Nadmiar V: <b>{simp['V_sac_excess']:.1f} mm³</b></div>
+        </div>
+        """, unsafe_allow_html=True)
+
     c_m1, c_m2, c_m3, c_m4 = st.columns(4)
     with c_m1:
         st.metric("3D Eccentricity (Ekscentryczność):", f"{simp['eccentricity']}", help="e = sqrt(1 - (b/a)^2)")
     with c_m2:
         st.metric("Eliptyczność przekroju (a/b):", f"{simp['ellipticity']}")
     with c_m3:
-        st.metric("Długość worka (≥1.2x):", f"{simp.get('aneurysm_len', simp['L']):.1f} mm", delta=f"Cały seg: {simp['L']:.1f} mm")
+        st.metric("Łączny tętniak (≥1.2x):", f"{simp['L_lesion']:.1f} mm", delta=f"Nadmiar V: {simp['excess_vol']:.1f} mm³")
     with c_m4:
         st.metric("Morfologia:", simp["morphology"])
 
