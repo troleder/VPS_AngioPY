@@ -674,6 +674,90 @@ def get_series_gif(filepath, pixel_array, cine_rate=15):
         print(f"Error generating GIF: {e}")
         return None
 
+@st.cache_data(max_entries=150, ttl=3600, show_spinner=False)
+def analyze_series_flow(dicom_path, file_size=None):
+    try:
+        dcm = pydicom.dcmread(dicom_path, force=True)
+        pixelArray = dcm.pixel_array
+        if len(pixelArray.shape) == 4:
+            pixelArray = pixelArray[:, :, :, 0]
+        elif len(pixelArray.shape) == 3 and pixelArray.shape[2] in (3, 4):
+            return 0, 0, 0
+        if len(pixelArray.shape) == 2:
+            pixelArray = np.expand_dims(pixelArray, axis=0)
+        n_slices = pixelArray.shape[0]
+        if n_slices <= 1:
+            return 0, 0, 0
+            
+        pa_f = pixelArray.astype(np.float32)
+        pmin, pmax = pa_f.min(), pa_f.max()
+        if pmax > pmin:
+            pa_f = (pa_f - pmin) / (pmax - pmin) * 255.0
+
+        scores = []
+        for i in range(n_slices):
+            frame = pa_f[i]
+            small = cv2.resize(frame, (256, 256))
+            blurred = scipy.ndimage.gaussian_filter(small.astype(float), 2)
+            grad = np.abs(np.gradient(blurred))
+            scores.append(np.sum(grad))
+            
+        scores = np.array(scores)
+        best_ix = int(np.argmax(scores))
+        if best_ix < 3 and n_slices > 10:
+            alt_best = int(np.argmax(scores[3:])) + 3
+            if scores[alt_best] > scores[best_ix] * 0.8:
+                best_ix = alt_best
+                
+        end_ix = n_slices - 1
+        baseline = np.mean(scores[:3]) if len(scores) > 3 else scores[0]
+        threshold = baseline + np.std(scores) * 1.5
+        start_ix = 0
+        for i in range(n_slices):
+            if scores[i] > threshold:
+                start_ix = i
+                break
+        if start_ix >= best_ix:
+            start_ix = max(0, best_ix - 15)
+            
+        return best_ix, start_ix, end_ix
+    except Exception as e:
+        return 0, 0, 0
+
+@st.cache_data(max_entries=150, ttl=3600, show_spinner=False)
+def get_preview_image(dicom_path, start_ix, best_ix, end_ix, file_size=None):
+    try:
+        dcm = pydicom.dcmread(dicom_path, force=True)
+        pa = dcm.pixel_array
+        if len(pa.shape) == 4: pa = pa[:, :, :, 0]
+        elif len(pa.shape) == 3 and pa.shape[2] in (3, 4):
+            pa = pa[:, :, 0]
+            pa = np.expand_dims(pa, axis=0)
+        if len(pa.shape) == 2: pa = np.expand_dims(pa, axis=0)
+        
+        n_slices = pa.shape[0]
+        start_ix = max(0, min(n_slices - 1, start_ix))
+        best_ix = max(0, min(n_slices - 1, best_ix))
+        end_ix = max(0, min(n_slices - 1, end_ix))
+
+        def _to_uint8(img):
+            img_f = img.astype(np.float32)
+            f_min, f_max = img_f.min(), img_f.max()
+            if f_max > f_min:
+                return ((img_f - f_min) / (f_max - f_min) * 255.0).astype(np.uint8)
+            else:
+                return np.zeros_like(img, dtype=np.uint8)
+                
+        frame_start = _to_uint8(pa[start_ix])
+        frame_best  = _to_uint8(pa[best_ix])
+        frame_end   = _to_uint8(pa[end_ix])
+        img_start = cv2.resize(frame_start, (512, 512))
+        img_best  = cv2.resize(frame_best,  (512, 512))
+        img_end   = cv2.resize(frame_end,   (512, 512))
+        return np.concatenate((img_start, img_best, img_end), axis=1)
+    except Exception as e:
+        return None
+
 def find_biplane_pairs(series_map, series_meta):
     """
     Finds groups of sequences chosen for analysis that share the exact same (vessel_system, aha_code).
@@ -716,7 +800,7 @@ def find_biplane_pairs(series_map, series_meta):
 # ── 1. WIDOK: PRZEGLĄD WSZYSTKICH PROJEKCJI Z KORONAROGRAFII (GALLERY) ────────
 def render_projections_gallery(active_pid, series_map):
     st.markdown(f"### 🗂️ Przegląd wszystkich projekcji koronarografii *(Dostępnych projekcji: {len(series_map)})*")
-    st.markdown("Oznacz naczynie i segment AHA dla projekcji. **Gdy wybierzesz dwie projekcje dla tego samego segmentu (pod różnymi kątami), system automatycznie wyliczy z nich objętość 3D Simpsona.**")
+    st.markdown("Automatycznie wyodrębnione optymalne klatki kontrastu ze wszystkich dostępnych projekcji DICOM. **Gdy wybierzesz dwie projekcje dla tego samego segmentu (pod różnymi kątami), system automatycznie wyliczy z nich objętość 3D Simpsona.**")
     
     meta_store_key = f"caa_series_meta_{active_pid}"
     if meta_store_key not in st.session_state:
@@ -759,8 +843,8 @@ def render_projections_gallery(active_pid, series_map):
                     🎉 Wykryto parę do rekonstrukcji Simpsona 3D: <u>{pair['aha_label']}</u>
                 </div>
                 <div style='margin-top: 6px; font-size: 14px; color: #ccfbf1;'>
-                    📹 <b>Projekcja 1:</b> {pair['p1_meta']['series_desc']} ({pair['p1_meta']['primary_angle']:+.1f}° / {pair['p1_meta']['secondary_angle']:+.1f}°) — <span style='color: {"#34d399" if p1_has_mask else "#facc15"};'>{p1_badge}</span><br/>
-                    🌐 <b>Projekcja 2:</b> {pair['p2_meta']['series_desc']} ({pair['p2_meta']['primary_angle']:+.1f}° / {pair['p2_meta']['secondary_angle']:+.1f}°) — <span style='color: {"#34d399" if p2_has_mask else "#facc15"};'>{p2_badge}</span><br/>
+                    📹 <b>Projekcja 1:</b> {pair['p1_meta']['series_desc']} ({pair['p1_meta']['primary_angle']:+.1f}° / {pair['p1_meta']['secondary_angle']:+.1f}°) — <span style='color: {"#34d399" if p1_has_mask else "#facc15"}; font-weight: 600;'>{p1_badge}</span><br/>
+                    🌐 <b>Projekcja 2:</b> {pair['p2_meta']['series_desc']} ({pair['p2_meta']['primary_angle']:+.1f}° / {pair['p2_meta']['secondary_angle']:+.1f}°) — <span style='color: {"#34d399" if p2_has_mask else "#facc15"}; font-weight: 600;'>{p2_badge}</span><br/>
                     📐 <b>Różnica kątów w przestrzeni 3D:</b> <b>{diff_deg:.1f}°</b> {status_icon} {"(Spełnia warunek ≥ 30° dla reguły Simpsona)" if is_valid_angle else "(Zalecane ≥ 30° dla optymalnej dokładności 3D)"}
                 </div>
             </div>
@@ -801,75 +885,78 @@ def render_projections_gallery(active_pid, series_map):
         has_mask = bool(st.session_state.get(f"caa_mask_{active_pid}_{os.path.basename(dfp)}_{active_fr}") is not None)
         status_dot = "🟢" if has_mask else "⚪"
         
-        with st.expander(f"{status_dot} {chosen_badge}Seria #{idx+1}: {d_meta['series_desc']} (Kąty: {d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°, {d_meta['total_frames']} klatek)", expanded=(idx < 2)):
-            c_card_img, c_card_meta = st.columns([1.2, 1.5])
-            
-            with c_card_img:
-                play_state = st.session_state.get(f"play_gif_{active_pid}_{idx}", False)
-                if play_state:
-                    gif_path = get_series_gif(dfp, d_meta["pixels"], d_meta.get("cine_rate", 15))
-                    if gif_path:
-                        safe_display_image(gif_path, caption=f"Animacja sekwencji | {d_meta['total_frames']} klatek")
-                    else:
-                        norm_f = get_norm_512(d_meta["pixels"][min(int(d_meta['total_frames']/2), d_meta['total_frames']-1)])
-                        safe_display_image(norm_f, caption=f"Klatka środkowa")
-                else:
-                    norm_f = get_norm_512(d_meta["pixels"][min(int(d_meta['total_frames']/2), d_meta['total_frames']-1)])
-                    safe_display_image(norm_f, caption=f"Klatka referencyjna (Kąty: {d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°)")
-                    
-                c_g1, c_g2 = st.columns(2)
-                with c_g1:
-                    btn_lbl = "⏹️ Stop" if play_state else "🎥 Odtwórz CINE"
-                    if st.button(btn_lbl, key=f"btn_play_{active_pid}_{idx}", use_container_width=True):
-                        st.session_state[f"play_gif_{active_pid}_{idx}"] = not play_state
-                        st.rerun()
-                with c_g2:
-                    if st.button("🎯 Obrysuj tę projekcję", key=f"btn_delineate_{active_pid}_{idx}", type="primary", use_container_width=True):
-                        st.session_state["caa_active_series_name"] = name
-                        st.session_state["caa_target_view"] = "single_delineation"
-                        st.rerun()
-                        
-            with c_card_meta:
-                st.markdown(f"**Nazwa serii:** `{d_meta['series_desc']}`")
-                st.markdown(f"**Kąty gantry:** LAO/RAO `{d_meta['primary_angle']:+.1f}°`, CRA/CAU `{d_meta['secondary_angle']:+.1f}°`")
-                st.markdown(f"**Liczba klatek:** `{d_meta['total_frames']}` | **Pixel Spacing:** `{d_meta['spacing']:.3f} mm`")
-                
-                # Chosen for analysis checkbox
-                new_chosen = st.checkbox("⭐ Wybierz do analizy tętniaka", value=chosen, key=f"chk_chosen_{active_pid}_{idx}")
+        with st.expander(f"{status_dot} {chosen_badge}Seria #{idx+1}: {d_meta['series_desc']} (Kąty: {d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°, {d_meta['total_frames']} klatek)", expanded=True):
+            # 1. Controls row: Chosen checkbox + Vessel System & AHA Segment
+            c_top_chk, c_v1, c_v2 = st.columns([1.2, 1.8, 2.0])
+            with c_top_chk:
+                new_chosen = st.checkbox("⭐ Wybierz do analizy", value=chosen, key=f"chk_chosen_{active_pid}_{idx}")
                 if new_chosen != chosen:
                     m["chosen_for_analysis"] = new_chosen
                     st.session_state[meta_store_key] = series_meta
                     st.rerun()
-                    
-                # Vessel System & AHA Segment
-                c_v1, c_v2 = st.columns(2)
-                with c_v1:
-                    cur_sys = m.get("vessel_system") or ALL_SYSTEM_NAMES[0]
-                    if cur_sys not in ALL_SYSTEM_NAMES: cur_sys = ALL_SYSTEM_NAMES[0]
-                    chosen_sys = st.selectbox("Naczynie:", ALL_SYSTEM_NAMES, index=ALL_SYSTEM_NAMES.index(cur_sys), key=f"vessel_sys_{active_pid}_{idx}")
-                    if chosen_sys != cur_sys:
-                        m["vessel_system"] = chosen_sys
-                        m["aha_label"] = _seg_labels(chosen_sys)[0]
-                        m["aha_code"] = _seg_codes(chosen_sys)[0]
-                        st.session_state[meta_store_key] = series_meta
-                        st.rerun()
-                        
-                with c_v2:
-                    seg_labels = _seg_labels(chosen_sys)
-                    seg_codes = _seg_codes(chosen_sys)
-                    cur_lbl = m.get("aha_label") or seg_labels[0]
-                    if cur_lbl not in seg_labels: cur_lbl = seg_labels[0]
-                    chosen_lbl = st.selectbox("Segment AHA:", seg_labels, index=seg_labels.index(cur_lbl), key=f"aha_seg_{active_pid}_{idx}")
-                    if chosen_lbl != cur_lbl:
-                        m["aha_label"] = chosen_lbl
-                        m["aha_code"] = seg_codes[seg_labels.index(chosen_lbl)]
-                        st.session_state[meta_store_key] = series_meta
-                        st.rerun()
-                        
-                if has_mask:
-                    st.success(f"🟢 Ta projekcja jest już obrysowana (Klatka {active_fr + 1}).")
+            with c_v1:
+                cur_sys = m.get("vessel_system") or ALL_SYSTEM_NAMES[0]
+                if cur_sys not in ALL_SYSTEM_NAMES: cur_sys = ALL_SYSTEM_NAMES[0]
+                chosen_sys = st.selectbox("Naczynie:", ALL_SYSTEM_NAMES, index=ALL_SYSTEM_NAMES.index(cur_sys), key=f"vessel_sys_{active_pid}_{idx}")
+                if chosen_sys != cur_sys:
+                    m["vessel_system"] = chosen_sys
+                    m["aha_label"] = _seg_labels(chosen_sys)[0]
+                    m["aha_code"] = _seg_codes(chosen_sys)[0]
+                    st.session_state[meta_store_key] = series_meta
+                    st.rerun()
+            with c_v2:
+                seg_labels = _seg_labels(chosen_sys)
+                seg_codes = _seg_codes(chosen_sys)
+                cur_lbl = m.get("aha_label") or seg_labels[0]
+                if cur_lbl not in seg_labels: cur_lbl = seg_labels[0]
+                chosen_lbl = st.selectbox("Segment AHA:", seg_labels, index=seg_labels.index(cur_lbl), key=f"aha_seg_{active_pid}_{idx}")
+                if chosen_lbl != cur_lbl:
+                    m["aha_label"] = chosen_lbl
+                    m["aha_code"] = seg_codes[seg_labels.index(chosen_lbl)]
+                    st.session_state[meta_store_key] = series_meta
+                    st.rerun()
+
+            # 2. Preview image row: 3-panel strip (Start | Peak QCA | Last Frame) or animated CINE
+            play_state = st.session_state.get(f"play_gif_{active_pid}_{idx}", False)
+            if play_state:
+                gif_path = get_series_gif(dfp, d_meta["pixels"], d_meta.get("cine_rate", 15))
+                if gif_path:
+                    safe_display_image(gif_path, caption=f"Animacja sekwencji | {d_meta['total_frames']} klatek")
                 else:
-                    st.info("⚪ Ta projekcja nie została jeszcze obrysowana.")
+                    norm_f = get_norm_512(d_meta["pixels"][min(int(d_meta['total_frames']/2), d_meta['total_frames']-1)])
+                    safe_display_image(norm_f, caption=f"Klatka środkowa")
+            else:
+                fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
+                b_ix, s_ix, e_ix = analyze_series_flow(dfp, fsize)
+                combined = get_preview_image(dfp, s_ix, b_ix, e_ix, fsize)
+                if combined is not None:
+                    safe_display_image(Image.fromarray(combined), caption=f"Start (Klatka {s_ix+1}) | Peak QCA (Klatka {b_ix+1}) | Last Frame (Klatka {e_ix+1})")
+                else:
+                    norm_f = get_norm_512(d_meta["pixels"][min(int(d_meta['total_frames']/2), d_meta['total_frames']-1)])
+                    safe_display_image(norm_f, caption=f"Klatka referencyjna (Kąty: {d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°)")
+
+            # 3. Bottom row: metadata & action buttons
+            c_b1, c_b2, c_b3 = st.columns([1, 1.8, 1.4])
+            with c_b1:
+                btn_lbl = "⏹️ Stop" if play_state else "🎥 Odtwórz CINE"
+                if st.button(btn_lbl, key=f"btn_play_{active_pid}_{idx}", use_container_width=True):
+                    st.session_state[f"play_gif_{active_pid}_{idx}"] = not play_state
+                    st.rerun()
+            with c_b2:
+                if has_mask:
+                    prof = st.session_state.get(f"caa_prof_{active_pid}_{os.path.basename(dfp)}_{active_fr}")
+                    dmax_txt = f"{prof['max_diam_mm']} mm" if prof else ""
+                    st.success(f"🟢 Obrysowana (Klatka {active_fr + 1}, Dmax={dmax_txt})")
+                else:
+                    st.caption(f"Kąty: **{d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°** | Klatki: **{d_meta['total_frames']}** | Skala: **{d_meta['spacing']:.3f} mm**")
+            with c_b3:
+                if st.button("🎯 Obrysuj tę projekcję", key=f"btn_delineate_{active_pid}_{idx}", type="primary", use_container_width=True):
+                    st.session_state["caa_active_series_name"] = name
+                    fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
+                    b_ix, _, _ = analyze_series_flow(dfp, fsize)
+                    st.session_state[f"caa_frame_{active_pid}_{os.path.basename(dfp)}"] = b_ix
+                    st.session_state["caa_target_view"] = "single_delineation"
+                    st.rerun()
 
 # ── 2. WIDOK: OBRYSOWANIE POJEDYNCZEJ PROJEKCJI ──────────────────────────────
 def render_single_delineation_view(active_pid, series_map):
