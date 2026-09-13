@@ -775,6 +775,163 @@ def export_aneurysm_to_stl(simp, n_phi=36, close_caps=True):
 
     return bytes(stl_buf)
 
+def generate_aneurysm_pdf_report(active_pid, pair, p1_meta, p2_meta, angle_diff, simp, ov1, ov2, vessel="LAD", aha_segment="Seg 6 Proximal LAD", thrombus="Brak (None)", calcification="Brak (None)", has_stenosis=False, mld_val=None, pct_stenosis=0.0):
+    """
+    Generates a clinical A4 PDF evaluation report containing:
+    - Patient, vessel, segment, and angiographic projection metadata
+    - 2D vessel overlays from both projections side-by-side with contours, centerline, and calipers
+    - High-resolution 3D reconstruction with discrete clinical color zones
+    - Comprehensive quantitative 3D Simpson volumetry and geometry results table
+    """
+    import io
+    import datetime
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    from mpl_toolkits.mplot3d import Axes3D
+
+    try:
+        D1 = np.array(simp["D1_slices"])
+        D2 = np.array(simp["D2_slices"])
+        Dref1 = np.array(simp["Dref1_slices"])
+        Dref2 = np.array(simp["Dref2_slices"])
+        s = np.array(simp["s_slices"])
+        n_s = len(s)
+        L_tot = float(s[-1]) if len(s) > 0 else 10.0
+        
+        # Longitudinal coordinate Z: Proximal top, Distal bottom
+        z_long = (L_tot / 2.0) - s
+        phi = np.linspace(0.0, 2.0 * np.pi, 28)
+        Z, Phi = np.meshgrid(z_long, phi, indexing="ij")
+        R1 = (D1 / 2.0)[:, None]
+        R2 = (D2 / 2.0)[:, None]
+        X = R1 * np.cos(Phi)
+        Y = R2 * np.sin(Phi)
+        
+        mean_D = (D1 + D2) / 2.0
+        mean_ref = (Dref1 + Dref2) / 2.0
+        r_ratio = mean_D / np.maximum(0.1, mean_ref)
+
+        # 3D surface discrete colors
+        facecolors = np.empty((n_s, 28, 4), dtype=float)
+        for i in range(n_s):
+            if r_ratio[i] < 1.2:
+                c = [0.06, 0.72, 0.51, 0.95]  # Green: Healthy (< 1.2x)
+            elif r_ratio[i] < 1.4:
+                c = [0.96, 0.62, 0.04, 0.95]  # Amber: Neck (1.2x - 1.4x)
+            else:
+                c = [0.94, 0.27, 0.27, 0.95]  # Red: Sac (>= 1.4x)
+            facecolors[i, :] = c
+
+        today_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        pdf_buf = io.BytesIO()
+
+        with PdfPages(pdf_buf) as pdf:
+            fig = plt.figure(figsize=(8.27, 11.69), dpi=120)  # A4 Portrait
+            fig.patch.set_facecolor("#ffffff")
+
+            # 1. Header Title
+            fig.text(0.5, 0.965, "RAPORT ANALIZY TĘTNIAKA WIEŃCOWEGO (BIPLANE QCA 3D)", ha="center", fontsize=14, weight="bold", color="#0f172a")
+            fig.text(0.5, 0.946, "System Ilościowej Angiografii Wieńcowej AngioPY | Moduł Rekonstrukcji 3D Simpsona", ha="center", fontsize=8.5, color="#64748b")
+            fig.add_artist(plt.Line2D([0.05, 0.95], [0.938, 0.938], color="#0284c7", linewidth=2.2))
+
+            # 2. Metadata Banner Box
+            rect = plt.Rectangle((0.05, 0.865), 0.90, 0.063, facecolor="#f8fafc", edgecolor="#cbd5e1", linewidth=0.8)
+            fig.add_artist(rect)
+            fig.text(0.07, 0.908, f"PACJENT ID: {active_pid}", fontsize=9.5, weight="bold", color="#0f172a")
+            fig.text(0.38, 0.908, f"NACZYNIE: {vessel} ({aha_segment})", fontsize=9.5, weight="bold", color="#0f172a")
+            fig.text(0.72, 0.908, f"DATA: {today_str[:10]}", fontsize=9.5, color="#334155")
+
+            p1_desc = p1_meta.get('series_desc', 'Proj 1')
+            p2_desc = p2_meta.get('series_desc', 'Proj 2')
+            fig.text(0.07, 0.878, f"P1: {p1_meta.get('primary_angle', 0.0):+.1f}° / {p1_meta.get('secondary_angle', 0.0):+.1f}° ({p1_desc[:20]})", fontsize=8, color="#475569")
+            fig.text(0.42, 0.878, f"P2: {p2_meta.get('primary_angle', 0.0):+.1f}° / {p2_meta.get('secondary_angle', 0.0):+.1f}° ({p2_desc[:20]})", fontsize=8, color="#475569")
+            fig.text(0.74, 0.878, f"Kąt 3D: {angle_diff:.1f}° ({'Zgodny ≥30°' if angle_diff >= 30 else 'Uwaga <30°'})", fontsize=8, weight="bold", color="#0284c7" if angle_diff >= 30 else "#d97706")
+
+            # 3. Section 1: 2D Angiograms
+            fig.text(0.05, 0.840, "1. OBRYSY NACZYNIA I KALIPERY (PROJEKCJA 1 ORAZ PROJEKCJA 2):", fontsize=9.5, weight="bold", color="#0f172a")
+
+            ax1 = fig.add_axes([0.05, 0.540, 0.435, 0.285])
+            if ov1 is not None:
+                ax1.imshow(ov1)
+            ax1.set_title(f"Projekcja 1: {p1_meta.get('primary_angle', 0.0):+.1f}° / {p1_meta.get('secondary_angle', 0.0):+.1f}° (Dmax: {simp['d1_max']:.1f} mm)", fontsize=8, weight="bold", pad=3)
+            ax1.axis("off")
+
+            ax2 = fig.add_axes([0.515, 0.540, 0.435, 0.285])
+            if ov2 is not None:
+                ax2.imshow(ov2)
+            ax2.set_title(f"Projekcja 2: {p2_meta.get('primary_angle', 0.0):+.1f}° / {p2_meta.get('secondary_angle', 0.0):+.1f}° (Dmax: {simp['d2_max']:.1f} mm)", fontsize=8, weight="bold", pad=3)
+            ax2.axis("off")
+
+            # 4. Section 2: 3D Reconstruction & Measurements
+            fig.text(0.05, 0.502, "2. REKONSTRUKCJA 3D I POMIARY WOLUMETRYCZNE SIMPSONA:", fontsize=9.5, weight="bold", color="#0f172a")
+
+            # 3D plot
+            ax3d = fig.add_axes([0.05, 0.095, 0.435, 0.395], projection="3d", facecolor="#090d16")
+            ax3d.plot_surface(X, Y, Z, facecolors=facecolors, shade=True, lightsource=matplotlib.colors.LightSource(azdeg=60, altdeg=45))
+            ax3d.plot([0, 0], [0, 0], [z_long[0], z_long[-1]], color="#38bdf8", linestyle="--", linewidth=1.5)
+            
+            # Caliper rings on 3D
+            theta_r = np.linspace(0, 2*np.pi, 40)
+            ax3d.plot((D1[0]/2)*np.cos(theta_r), (D2[0]/2)*np.sin(theta_r), np.full_like(theta_r, z_long[0]), color="#22c55e", linewidth=2)
+            ax3d.plot((D1[-1]/2)*np.cos(theta_r), (D2[-1]/2)*np.sin(theta_r), np.full_like(theta_r, z_long[-1]), color="#22c55e", linewidth=2)
+            m_idx = simp.get("max_idx_slice", int(np.argmax(mean_D)))
+            ax3d.plot((D1[m_idx]/2)*np.cos(theta_r), (D2[m_idx]/2)*np.sin(theta_r), np.full_like(theta_r, z_long[m_idx]), color="#ef4444", linewidth=2)
+
+            ax3d.view_init(elev=12, azim=45)
+            ax3d.set_box_aspect([1.0, 1.0, 2.2])
+            ax3d.axis("off")
+            ax3d.set_title("Model 3D [Zielony: Zdrowe | Zółty: Szyja | Czerwony: Worek]", fontsize=7.5, color="#334155", pad=-10)
+
+            # Measurements Table
+            ax_tbl = fig.add_axes([0.515, 0.095, 0.435, 0.395])
+            ax_tbl.axis("off")
+
+            ref_avg = (simp['ref1_mean'] + simp['ref2_mean']) / 2.0
+            stenosis_txt = f"{pct_stenosis}% (MLD: {mld_val:.1f} mm)" if (has_stenosis and mld_val is not None) else "Brak"
+
+            table_rows = [
+                ["Nadmiarowa objętość tętniaka (≥1.2x)", f"{simp['excess_vol']:.1f} mm³ ({simp['excess_vol']:.1f} μl)"],
+                ["Całkowita objętość naczynia (V_total)", f"{simp['total_vol']:.1f} mm³ ({simp['total_vol']:.1f} μl)"],
+                ["Objętość referencyjna (V_ref)", f"{simp['ref_vol']:.1f} mm³"],
+                ["Długość worka tętniaka (≥1.2x)", f"{simp.get('aneurysm_len', simp['L']):.1f} mm (cały: {simp['L']:.1f} mm)"],
+                ["Maksymalna średnica Dmax (P1)", f"{simp['d1_max']:.1f} mm (Ratio: {simp['dilation_ratio_1']}x)"],
+                ["Maksymalna średnica Dmax (P2)", f"{simp['d2_max']:.1f} mm (Ratio: {simp['dilation_ratio_2']}x)"],
+                ["Średnica referencyjna uśredniona", f"{ref_avg:.1f} mm (P1: {simp['ref1_mean']:.1f} | P2: {simp['ref2_mean']:.1f})"],
+                ["3D Ekscentryczność / Eliptyczność", f"{simp['eccentricity']} / {simp['ellipticity']}"],
+                ["Morfologia tętniaka", f"{simp['morphology']}"],
+                ["Skrzeplina w świetle (Thrombus)", f"{thrombus}"],
+                ["Zwapnienia ściany (Calcification)", f"{calcification}"],
+                ["Współistniejące zwężenie", f"{stenosis_txt}"],
+            ]
+
+            table = ax_tbl.table(cellText=table_rows, colLabels=["Parametr biplanarny 3D", "Wartość pomiaru"], loc="center", cellLoc="left")
+            table.auto_set_font_size(False)
+            table.set_fontsize(7.5)
+            table.scale(1.0, 1.45)
+
+            for (row, col), cell in table.get_celld().items():
+                if row == 0:
+                    cell.set_facecolor("#0284c7")
+                    cell.set_text_props(color="#ffffff", weight="bold")
+                elif row % 2 == 1:
+                    cell.set_facecolor("#f8fafc")
+                else:
+                    cell.set_facecolor("#ffffff")
+                cell.set_edgecolor("#e2e8f0")
+
+            # Footer
+            fig.text(0.5, 0.035, f"Raport wygenerowany przez AngioPy Segmentation System ({today_str}). Zastosowanie kliniczne i badawcze.", ha="center", fontsize=7.5, color="#94a3b8")
+
+            pdf.savefig(fig)
+            plt.close(fig)
+
+        return pdf_buf.getvalue()
+    except Exception as e:
+        print(f"Error in generate_aneurysm_pdf_report: {e}")
+        return b""
+
 def calibrate_catheter(frame_2d, pt1, pt2, catheter_mm):
     """
     Tracks edges of the catheter along the vector between pt1 and pt2
@@ -2522,6 +2679,45 @@ def render_biplane_results_content(active_pid, pair, series_map):
     if fig_3d is not None:
         st.plotly_chart(fig_3d, use_container_width=True)
 
+    c_pdf_act1, c_pdf_act2 = st.columns([1.5, 1.0])
+    pdf_filename = f"Raport_CAA_3D_{active_pid}_{pair.get('aha_code', 'seg')}.pdf"
+    with c_pdf_act1:
+        pdf_bytes = generate_aneurysm_pdf_report(
+            active_pid=active_pid,
+            pair=pair,
+            p1_meta=p1_meta,
+            p2_meta=p2_meta,
+            angle_diff=angle_diff,
+            simp=simp,
+            ov1=ov1,
+            ov2=ov2,
+            vessel=pair.get("aha_label", "LAD"),
+            aha_segment=pair.get("aha_label", "Seg"),
+            thrombus="Brak (None)",
+            calcification="Brak (None)"
+        )
+        st.download_button(
+            label="📄 Pobierz pełny Raport PDF (Obrysy 2D + 3D + Pomiary)",
+            data=pdf_bytes,
+            file_name=pdf_filename,
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True,
+            key=f"btn_pdf_top_{pair['aha_code']}",
+            help="Generuje i pobiera gotowy do druku raport kliniczny A4 ze wszystkimi obrysami 2D, rekonstrukcją 3D i tabelą wyników"
+        )
+    with c_pdf_act2:
+        stl_data = export_aneurysm_to_stl(simp)
+        st.download_button(
+            label="📥 Pobierz model 3D (STL)",
+            data=stl_data,
+            file_name=f"aneurysm_3d_{active_pid}_{pair.get('aha_code', 'seg')}.stl",
+            mime="application/sla",
+            use_container_width=True,
+            key=f"btn_stl_top_{pair['aha_code']}",
+            help="Pobierz plik w formacie STL do druku 3D lub przeglądania w programach CAD / 3D Slicer"
+        )
+
     st.markdown("---")
     st.markdown("#### 📝 Dokumentacja kliniczna i zapis do bazy:")
     c_doc1, c_doc2 = st.columns(2)
@@ -2544,67 +2740,96 @@ def render_biplane_results_content(active_pid, pair, series_map):
             pct_stenosis = round((1.0 - (mld_val / ref_avg)) * 100.0, 1)
             st.metric("% Stenosis:", f"{pct_stenosis}%")
 
-    if st.button("💾 Zapisz pełne badanie biplanarne tętniaka do bazy danych", type="primary", use_container_width=True, key=f"btn_save_biplane_{pair['aha_code']}"):
-        img_b64 = None
-        try:
-            h1, w1 = ov1.shape[:2]
-            h2, w2 = ov2.shape[:2]
-            target_h = 350
-            w1_sc = int(w1 * (target_h / h1))
-            w2_sc = int(w2 * (target_h / h2))
-            ov1_sc = cv2.resize(ov1, (w1_sc, target_h))
-            ov2_sc = cv2.resize(ov2, (w2_sc, target_h))
-            combined_ov = np.hstack([ov1_sc, ov2_sc])
-            pil_thumb = Image.fromarray(combined_ov)
-            buf = io.BytesIO()
-            pil_thumb.save(buf, format="JPEG", quality=80)
-            img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-        except Exception as e:
-            print(f"Error encoding thumbnail: {e}")
-            
-        record = {
-            "patient_id": active_pid,
-            "vessel": vessel,
-            "aha_segment": aha_segment,
-            "morphology": simp["morphology"],
-            "thrombus": thrombus,
-            "calcification": calcification,
-            "simpson_total_vol_mm3": simp["total_vol"],
-            "simpson_excess_vol_mm3": simp["excess_vol"],
-            "simpson_ref_vol_mm3": simp["ref_vol"],
-            "simpson_angle_diff_deg": round(angle_diff, 1),
-            "eccentricity": simp["eccentricity"],
-            "ellipticity": simp["ellipticity"],
-            "d1_max_mm": simp["d1_max"],
-            "d2_max_mm": simp["d2_max"],
-            "ref1_mean_mm": simp["ref1_mean"],
-            "ref2_mean_mm": simp["ref2_mean"],
-            "dilation_ratio_1": simp["dilation_ratio_1"],
-            "dilation_ratio_2": simp["dilation_ratio_2"],
-            "length_mm": simp["L"],
-            "d1_slices_mm": simp.get("D1_slices", []),
-            "d2_slices_mm": simp.get("D2_slices", []),
-            "s_slices_mm": simp.get("s_slices", []),
-            "p1_series": p1_meta["series_desc"],
-            "p1_angles": f"{p1_meta['primary_angle']:+.1f}° / {p1_meta['secondary_angle']:+.1f}°",
-            "p2_series": p2_meta["series_desc"],
-            "p2_angles": f"{p2_meta['primary_angle']:+.1f}° / {p2_meta['secondary_angle']:+.1f}°",
-            "has_concomitant_stenosis": bool(has_stenosis),
-            "mld_mm": float(mld_val) if mld_val is not None else None,
-            "pct_stenosis": float(pct_stenosis) if has_stenosis else 0.0,
-            "thumbnail_b64": img_b64,
-            "annotator": st.session_state.user.get("email", "syl.iwanczyk@gmail.com") if "user" in st.session_state else "syl.iwanczyk@gmail.com",
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
-        }
-        try:
-            from firebase_admin import firestore
-            db = firestore.client()
-            doc_id = f"{active_pid}_{vessel}_{aha_segment.replace(' ', '_')}_{int(time.time())}"
-            db.collection("aneurysm_results").document(doc_id).set(record)
-            st.success(f"✅ Zapisano pomyślnie badanie tętniaka dla pacjenta **{active_pid}** ({aha_segment}) w kolekcji 'aneurysm_results'!")
-        except Exception as e:
-            st.error(f"Błąd zapisu do bazy danych: {e}")
-            
+    c_save_act, c_pdf_doc_act = st.columns([1.3, 1.0])
+    with c_pdf_doc_act:
+        pdf_doc_bytes = generate_aneurysm_pdf_report(
+            active_pid=active_pid,
+            pair=pair,
+            p1_meta=p1_meta,
+            p2_meta=p2_meta,
+            angle_diff=angle_diff,
+            simp=simp,
+            ov1=ov1,
+            ov2=ov2,
+            vessel=vessel,
+            aha_segment=aha_segment,
+            thrombus=thrombus,
+            calcification=calcification,
+            has_stenosis=has_stenosis,
+            mld_val=mld_val,
+            pct_stenosis=pct_stenosis
+        )
+        st.download_button(
+            label="📄 Pobierz Raport PDF (z dokumentacją)",
+            data=pdf_doc_bytes,
+            file_name=pdf_filename,
+            mime="application/pdf",
+            use_container_width=True,
+            key=f"btn_pdf_doc_{pair['aha_code']}",
+            help="Pobierz zaktualizowany raport kliniczny PDF uwzględniający wprowadzoną dokumentację medyczną"
+        )
+    with c_save_act:
+        if st.button("💾 Zapisz pełne badanie biplanarne tętniaka do bazy danych", type="primary", use_container_width=True, key=f"btn_save_biplane_{pair['aha_code']}"):
+            img_b64 = None
+            try:
+                h1, w1 = ov1.shape[:2]
+                h2, w2 = ov2.shape[:2]
+                target_h = 350
+                w1_sc = int(w1 * (target_h / h1))
+                w2_sc = int(w2 * (target_h / h2))
+                ov1_sc = cv2.resize(ov1, (w1_sc, target_h))
+                ov2_sc = cv2.resize(ov2, (w2_sc, target_h))
+                combined_ov = np.hstack([ov1_sc, ov2_sc])
+                pil_thumb = Image.fromarray(combined_ov)
+                buf = io.BytesIO()
+                pil_thumb.save(buf, format="JPEG", quality=80)
+                img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            except Exception as e:
+                print(f"Error encoding thumbnail: {e}")
+                
+            record = {
+                "patient_id": active_pid,
+                "vessel": vessel,
+                "aha_segment": aha_segment,
+                "morphology": simp["morphology"],
+                "thrombus": thrombus,
+                "calcification": calcification,
+                "simpson_total_vol_mm3": simp["total_vol"],
+                "simpson_excess_vol_mm3": simp["excess_vol"],
+                "simpson_ref_vol_mm3": simp["ref_vol"],
+                "simpson_angle_diff_deg": round(angle_diff, 1),
+                "eccentricity": simp["eccentricity"],
+                "ellipticity": simp["ellipticity"],
+                "d1_max_mm": simp["d1_max"],
+                "d2_max_mm": simp["d2_max"],
+                "ref1_mean_mm": simp["ref1_mean"],
+                "ref2_mean_mm": simp["ref2_mean"],
+                "dilation_ratio_1": simp["dilation_ratio_1"],
+                "dilation_ratio_2": simp["dilation_ratio_2"],
+                "length_mm": simp["L"],
+                "d1_slices_mm": simp.get("D1_slices", []),
+                "d2_slices_mm": simp.get("D2_slices", []),
+                "s_slices_mm": simp.get("s_slices", []),
+                "p1_series": p1_meta["series_desc"],
+                "p1_angles": f"{p1_meta['primary_angle']:+.1f}° / {p1_meta['secondary_angle']:+.1f}°",
+                "p2_series": p2_meta["series_desc"],
+                "p2_angles": f"{p2_meta['primary_angle']:+.1f}° / {p2_meta['secondary_angle']:+.1f}°",
+                "has_concomitant_stenosis": bool(has_stenosis),
+                "mld_mm": float(mld_val) if mld_val is not None else None,
+                "pct_stenosis": float(pct_stenosis) if has_stenosis else 0.0,
+                "thumbnail_b64": img_b64,
+                "annotator": st.session_state.user.get("email", "syl.iwanczyk@gmail.com") if "user" in st.session_state else "syl.iwanczyk@gmail.com",
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+            try:
+                from firebase_admin import firestore
+                db = firestore.client()
+                doc_id = f"{active_pid}_{vessel}_{aha_segment.replace(' ', '_')}_{int(time.time())}"
+                db.collection("aneurysm_results").document(doc_id).set(record)
+                st.success(f"✅ Zapisano pomyślnie badanie tętniaka dla pacjenta **{active_pid}** ({aha_segment}) w kolekcji 'aneurysm_results'!")
+            except Exception as e:
+                st.error(f"Błąd zapisu do bazy danych: {e}")
+                
     return True
 
 # ── 3. WIDOK: OBRYSOWANIE W PARZE (PAIRED DELINEATION WORKFLOW) ──────────────
