@@ -397,12 +397,11 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
         print(f"Error in compute_biplane_simpsons_volumetry: {e}")
         return None
 
-def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", orientation="vertical", show_ref=True, show_rings=True, n_phi=36):
+def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", orientation="horizontal", show_ref=True, show_rings=True, n_phi=36):
     """
     Constructs an interactive 3D mesh reconstruction of the coronary artery aneurysm
     derived from biplane Simpson cross-sectional slice profiles.
-    Supports vertical (pionowa - default, matching anatomical vessel catheterization flow)
-    and horizontal (pozioma) orientations.
+    Supports horizontal (pozioma - default) and vertical (pionowa) orientations.
     """
     try:
         D1 = np.array(simp["D1_slices"])
@@ -877,14 +876,14 @@ def generate_aneurysm_pdf_report(active_pid, pair, p1_meta, p2_meta, angle_diff,
         n_s = len(s)
         L_tot = float(s[-1]) if len(s) > 0 else 10.0
         
-        # Longitudinal coordinate Z: Proximal top, Distal bottom
-        z_long = (L_tot / 2.0) - s
+        # Longitudinal coordinate X: Proximal left, Distal right (Horizontal layout)
+        x_long = s - (L_tot / 2.0)
         phi = np.linspace(0.0, 2.0 * np.pi, 28)
-        Z, Phi = np.meshgrid(z_long, phi, indexing="ij")
+        X, Phi = np.meshgrid(x_long, phi, indexing="ij")
         R1 = (D1 / 2.0)[:, None]
         R2 = (D2 / 2.0)[:, None]
-        X = R1 * np.cos(Phi)
-        Y = R2 * np.sin(Phi)
+        Y = R1 * np.cos(Phi)
+        Z = R2 * np.sin(Phi)
         
         mean_D = (D1 + D2) / 2.0
         mean_ref = (Dref1 + Dref2) / 2.0
@@ -947,20 +946,21 @@ def generate_aneurysm_pdf_report(active_pid, pair, p1_meta, p2_meta, angle_diff,
             # 4. Section 2: 3D Reconstruction & Measurements
             fig.text(0.05, 0.502, "2. REKONSTRUKCJA 3D I POMIARY WOLUMETRYCZNE SIMPSONA:", fontsize=9.5, weight="bold", color="#0f172a")
 
-            # 3D plot
+            # 3D plot (Horizontal layout: Proximal left -> Distal right)
             ax3d = fig.add_axes([0.05, 0.095, 0.435, 0.395], projection="3d", facecolor="#090d16")
             ax3d.plot_surface(X, Y, Z, facecolors=facecolors, shade=True, lightsource=matplotlib.colors.LightSource(azdeg=60, altdeg=45))
-            ax3d.plot([0, 0], [0, 0], [z_long[0], z_long[-1]], color="#38bdf8", linestyle="--", linewidth=1.5)
+            ax3d.plot([x_long[0], x_long[-1]], [0, 0], [0, 0], color="#38bdf8", linestyle="--", linewidth=1.5)
             
-            # Caliper rings on 3D
+            # Caliper rings on 3D (horizontal)
             theta_r = np.linspace(0, 2*np.pi, 40)
-            ax3d.plot((D1[0]/2)*np.cos(theta_r), (D2[0]/2)*np.sin(theta_r), np.full_like(theta_r, z_long[0]), color="#22c55e", linewidth=2)
-            ax3d.plot((D1[-1]/2)*np.cos(theta_r), (D2[-1]/2)*np.sin(theta_r), np.full_like(theta_r, z_long[-1]), color="#22c55e", linewidth=2)
+            wlot_ring_col = "#f59e0b" if simp.get("is_ostial") else "#22c55e"
+            ax3d.plot(np.full_like(theta_r, x_long[0]), (D1[0]/2)*np.cos(theta_r), (D2[0]/2)*np.sin(theta_r), color=wlot_ring_col, linewidth=2)
+            ax3d.plot(np.full_like(theta_r, x_long[-1]), (D1[-1]/2)*np.cos(theta_r), (D2[-1]/2)*np.sin(theta_r), color="#22c55e", linewidth=2)
             m_idx = simp.get("max_idx_slice", int(np.argmax(mean_D)))
-            ax3d.plot((D1[m_idx]/2)*np.cos(theta_r), (D2[m_idx]/2)*np.sin(theta_r), np.full_like(theta_r, z_long[m_idx]), color="#ef4444", linewidth=2)
+            ax3d.plot(np.full_like(theta_r, x_long[m_idx]), (D1[m_idx]/2)*np.cos(theta_r), (D2[m_idx]/2)*np.sin(theta_r), color="#ef4444", linewidth=2)
 
-            ax3d.view_init(elev=12, azim=45)
-            ax3d.set_box_aspect([1.0, 1.0, 2.2])
+            ax3d.view_init(elev=20, azim=-60)
+            ax3d.set_box_aspect([2.2, 1.0, 1.0])
             ax3d.axis("off")
             ax3d_lbl = "Model 3D [Zielony: Zdrowe | Zółty: Szyja | Czerwony: Worek]"
             if simp.get("is_ostial"):
@@ -2948,13 +2948,13 @@ def render_biplane_results_content(active_pid, pair, series_map):
     with c_3d_ctrl0:
         orient_choice = st.radio(
             "Orientacja naczynia:",
-            options=["↕️ Wertykalnie (Pion)", "↔️ Horyzontalnie"],
+            options=["↔️ Horyzontalnie (Poziom)", "↕️ Wertykalnie (Pion)"],
             index=0,
             horizontal=True,
             key=f"caa_3d_orient_{pair['aha_code']}",
-            help="Orientacja wertykalna (pionowa) odpowiada naturalnemu przebiegowi naczynia w pracowni hemodynamicznej (od góry: wlot proksymalny -> w dół: wylot dystalny)"
+            help="Orientacja horyzontalna (domyślna): naczynie wzdłuż osi poziomej (od lewej: proksymalny -> w prawo: dystalny)"
         )
-        orient_param = "vertical" if "Wertykalnie" in orient_choice else "horizontal"
+        orient_param = "horizontal" if "Horyzontalnie" in orient_choice else "vertical"
     with c_3d_ctrl1:
         color_mode = st.radio(
             "Kolory naczynia 3D:",
