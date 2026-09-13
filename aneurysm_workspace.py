@@ -236,16 +236,26 @@ def calibrate_catheter(frame_2d, pt1, pt2, catheter_mm):
                         lw.append((wx0, wy0))
                         rw.append((wx1, wy1))
                         
-        if detectedDiameters:
+        if detectedDiameters and lw and rw:
             avg_diam_px = float(np.mean(detectedDiameters))
             mm_per_pixel = float(catheter_mm / avg_diam_px)
+            mid_lw = lw[len(lw) // 2]
+            mid_rw = rw[len(rw) // 2]
+            mid_cx = (mid_lw[0] + mid_rw[0]) / 2.0
+            mid_cy = (mid_lw[1] + mid_rw[1]) / 2.0
+            cs_theta = tube_theta - np.pi / 2.0
+            gx1 = mid_cx - (avg_diam_px / 2.0) * np.cos(cs_theta)
+            gy1 = mid_cy - (avg_diam_px / 2.0) * np.sin(cs_theta)
+            gx2 = mid_cx + (avg_diam_px / 2.0) * np.cos(cs_theta)
+            gy2 = mid_cy + (avg_diam_px / 2.0) * np.sin(cs_theta)
             return {
                 "avg_diam_px": avg_diam_px,
                 "mm_per_pixel": mm_per_pixel,
                 "lw": lw,
                 "rw": rw,
                 "click1": (cx1, cy1),
-                "click2": (cx2, cy2)
+                "click2": (cx2, cy2),
+                "ref_line": ((int(round(gx1)), int(round(gy1))), (int(round(gx2)), int(round(gy2))))
             }
     except Exception as e:
         print(f"Catheter calib error: {e}")
@@ -663,94 +673,125 @@ def render_coronary_aneurysm_workspace():
             st.markdown("#### 📏 Kalibracja cewnika naczyniowego (Catheter Calibration)")
             st.markdown("""
             <div style='background-color: #042f2e; border-left: 4px solid #14b8a6; padding: 10px 14px; border-radius: 4px; margin-bottom: 12px; font-size: 14px; color: #ccfbf1;'>
-                <b>Instrukcja kalibracji:</b><br/>
-                1. Wybierz rozmiar cewnika diagnostycznego/prowadzącego (standardowo 5F lub 6F).<br/>
-                2. Kliknij <b>2 punkty wzdłuż trzonu cewnika</b> na obrazie poniżej.<br/>
-                3. System automatycznie wykryje krawędzie cewnika podpikselowym gradientem i wyliczy skalę <code>mm/px</code>.
+                <b>Instrukcja kalibracji (Auto-QCA):</b><br/>
+                1. Wybierz rozmiar cewnika diagnostycznego (standardowo 6F lub 5F).<br/>
+                2. Kliknij <b>2 punkty wzdłuż trzonu cewnika</b> na obrazie poniżej (czerwone kropki).<br/>
+                3. Silnik angioPy <b>samoczynnie wykryje krawędzie cewnika</b> za pomocą gradientu subpikselowego i natychmiast przeliczy skalę <code>mm/px</code>.
             </div>
             """, unsafe_allow_html=True)
             
             calib_bg = norm_rgb.copy()
-            if calib_info is not None and "lw" in calib_info and "rw" in calib_info:
-                for pt in calib_info["lw"]:
-                    cv2.circle(calib_bg, (int(pt[0]), int(pt[1])), 2, (0, 255, 0), -1)
-                for pt in calib_info["rw"]:
-                    cv2.circle(calib_bg, (int(pt[0]), int(pt[1])), 2, (0, 255, 0), -1)
-                cv2.line(calib_bg, calib_info["click1"], calib_info["click2"], (0, 255, 255), 1)
+            if calib_info is not None:
+                if "lw" in calib_info and "rw" in calib_info:
+                    for pt in calib_info["lw"]:
+                        cv2.circle(calib_bg, (int(round(pt[0])), int(round(pt[1]))), 2, (0, 255, 0), -1)
+                    for pt in calib_info["rw"]:
+                        cv2.circle(calib_bg, (int(round(pt[0])), int(round(pt[1]))), 2, (0, 255, 0), -1)
+                if "click1" in calib_info and "click2" in calib_info:
+                    p1_i, p2_i = calib_info["click1"], calib_info["click2"]
+                    cv2.line(calib_bg, p1_i, p2_i, (0, 255, 0), 1)
+                    dx = p2_i[0] - p1_i[0]
+                    dy = p2_i[1] - p1_i[1]
+                    tube_theta = np.arctan2(dy, dx)
+                    L_w = 20
+                    px = int(round(L_w * np.cos(tube_theta + np.pi/2)))
+                    py = int(round(L_w * np.sin(tube_theta + np.pi/2)))
+                    cv2.line(calib_bg, (p1_i[0]-px, p1_i[1]-py), (p1_i[0]+px, p1_i[1]+py), (255, 0, 0), 1)
+                    cv2.line(calib_bg, (p2_i[0]-px, p2_i[1]-py), (p2_i[0]+px, p2_i[1]+py), (255, 0, 0), 1)
+                    cv2.circle(calib_bg, p1_i, 3, (0, 0, 255), -1)
+                    cv2.circle(calib_bg, p2_i, 3, (0, 0, 255), -1)
+                if "ref_line" in calib_info:
+                    cv2.line(calib_bg, calib_info["ref_line"][0], calib_info["ref_line"][1], (0, 255, 0), 2)
 
             calib_canvas_key = f"calib_canvas_{case_key}_{st.session_state.get('caa_calib_suffix', 0)}"
             c_canvas = st_canvas(
-                fill_color="rgba(0,0,0,0)",
-                stroke_width=2,
-                stroke_color="#00ffff",
+                fill_color="#ff0000",
+                stroke_width=0,
+                stroke_color="#ff0000",
                 background_color="black",
                 background_image=Image.fromarray(calib_bg),
                 update_streamlit=True,
                 height=512,
                 width=512,
                 drawing_mode="point",
-                point_display_radius=5,
+                point_display_radius=2,
                 key=calib_canvas_key
             )
 
         with col_params:
             st.markdown("#### Parametry cewnika")
+            CATHETER_SIZES = {
+                "6F = 1.98 mm": 1.98,
+                "5F = 1.67 mm": 1.67,
+                "7F = 2.33 mm": 2.33,
+                "4F = 1.35 mm": 1.35,
+                "8F = 2.67 mm": 2.67,
+                "Własny rozmiar (Custom mm)": None
+            }
             cat_choice = st.selectbox(
                 "Rozmiar cewnika:",
-                ["6F (2.00 mm)", "5F (1.67 mm)", "7F (2.33 mm)", "4F (1.35 mm)", "8F (2.67 mm)", "Własny rozmiar (Custom mm)"],
+                list(CATHETER_SIZES.keys()),
                 index=0,
                 key="caa_cat_choice"
             )
-            cat_size_map = {
-                "4F (1.35 mm)": 1.35,
-                "5F (1.67 mm)": 1.67,
-                "6F (2.00 mm)": 2.00,
-                "7F (2.33 mm)": 2.33,
-                "8F (2.67 mm)": 2.67
-            }
             if cat_choice == "Własny rozmiar (Custom mm)":
-                catheter_mm = st.number_input("Średnica cewnika [mm]:", min_value=0.5, max_value=5.0, value=2.00, step=0.05)
+                catheter_mm = st.number_input("Średnica cewnika [mm]:", min_value=0.5, max_value=5.0, value=1.98, step=0.05)
             else:
-                catheter_mm = cat_size_map[cat_choice]
+                catheter_mm = CATHETER_SIZES[cat_choice]
                 
-            st.markdown("---")
+            # If catheter size changed on existing calibration:
+            if calib_info is not None and (calib_info.get("catheter_mm") != catheter_mm or calib_info.get("catheter_name") != cat_choice):
+                calib_info["catheter_name"] = cat_choice
+                calib_info["catheter_mm"] = catheter_mm
+                calib_info["mm_per_pixel"] = float(catheter_mm / calib_info["avg_diam_px"])
+                st.session_state[calib_key] = calib_info
+                if active_mask is not None:
+                    prof = extract_aneurysm_profile(active_mask, calib_info["mm_per_pixel"])
+                    if prof:
+                        st.session_state[prof_key] = prof
+                st.rerun()
+
+            # Automatic detection as soon as 2 points exist:
             if c_canvas.json_data is not None and "objects" in c_canvas.json_data:
                 objs = c_canvas.json_data["objects"]
                 if len(objs) >= 2:
-                    p1 = (float(objs[0].get('left', 0)), float(objs[0].get('top', 0)))
-                    p2 = (float(objs[1].get('left', 0)), float(objs[1].get('top', 0)))
+                    r1 = float(objs[0].get('radius', 2))
+                    p1 = (float(objs[0].get('left', 0)) + r1, float(objs[0].get('top', 0)) + r1)
+                    r2 = float(objs[1].get('radius', 2))
+                    p2 = (float(objs[1].get('left', 0)) + r2, float(objs[1].get('top', 0)) + r2)
                     
-                    if st.button("🚀 Oblicz kalibrację z zaznaczonych punktów", type="primary", use_container_width=True):
-                        with st.spinner("Wykrywanie krawędzi cewnika..."):
-                            res = calibrate_catheter(norm_512, p1, p2, catheter_mm)
-                            if res is not None:
-                                res["catheter_name"] = cat_choice
-                                res["catheter_mm"] = catheter_mm
-                                st.session_state[calib_key] = res
-                                # Update profile if already exists
-                                if active_mask is not None:
-                                    prof = extract_aneurysm_profile(active_mask, res["mm_per_pixel"])
-                                    if prof:
-                                        st.session_state[prof_key] = prof
-                                st.session_state["caa_calib_suffix"] = st.session_state.get("caa_calib_suffix", 0) + 1
-                                st.success(f"✅ Kalibracja powiodła się: {res['avg_diam_px']:.1f} px = {catheter_mm:.2f} mm → **{res['mm_per_pixel']:.4f} mm/px**")
-                                time.sleep(0.5)
-                                st.rerun()
-                            else:
-                                st.error("Nie udało się precyzyjnie wykryć obu krawędzi cewnika. Spróbuj wskazać punkty w prostym odcinku cewnika.")
+                    eval_sig = (round(p1[0], 1), round(p1[1], 1), round(p2[0], 1), round(p2[1], 1), catheter_mm, cat_choice)
+                    last_sig = st.session_state.get(f"caa_last_calib_eval_{case_key}", None)
+                    
+                    if last_sig != eval_sig:
+                        st.session_state[f"caa_last_calib_eval_{case_key}"] = eval_sig
+                        res = calibrate_catheter(norm_512, p1, p2, catheter_mm)
+                        if res is not None:
+                            res["catheter_name"] = cat_choice
+                            res["catheter_mm"] = catheter_mm
+                            st.session_state[calib_key] = res
+                            if active_mask is not None:
+                                prof = extract_aneurysm_profile(active_mask, res["mm_per_pixel"])
+                                if prof:
+                                    st.session_state[prof_key] = prof
+                            st.session_state["caa_calib_suffix"] = st.session_state.get("caa_calib_suffix", 0) + 1
+                            st.rerun()
+                        else:
+                            st.error("⚠️ Nie udało się precyzyjnie wykryć krawędzi cewnika. Wskaż 2 punkty w prostym, widocznym odcinku cewnika.")
                                 
             if calib_info is not None:
-                st.success(calib_badge)
+                st.success(f"✅ Kalibracja ({calib_info.get('catheter_name', cat_choice)}): {calib_info['avg_diam_px']:.1f} px = {calib_info['catheter_mm']:.2f} mm → **{calib_info['mm_per_pixel']:.4f} mm/px**")
                 if st.button("➡️ Przejdź do obrysowania tętniaka (Krok 2)", type="primary", use_container_width=True):
                     st.session_state["caa_target_step"] = "2️⃣ Obrysowanie tętniaka (AI)"
                     st.rerun()
                 if st.button("🔄 Skasuj i powtórz kalibrację", use_container_width=True):
                     st.session_state.pop(calib_key, None)
+                    st.session_state.pop(f"caa_last_calib_eval_{case_key}", None)
                     st.session_state["caa_calib_suffix"] = st.session_state.get("caa_calib_suffix", 0) + 1
                     st.rerun()
             else:
                 st.info(calib_badge)
-                st.markdown("Możesz także pominąć ręczną kalibrację cewnika i użyć wartości z nagłówka DICOM:")
+                st.caption("Wskaż 2 punkty na cewniku na obrazie obok — system samoczynnie wykryje średnicę cewnika.")
                 if st.button("⚡ Użyj kalibracji DICOM i przejdź do Kroku 2", use_container_width=True):
                     st.session_state["caa_target_step"] = "2️⃣ Obrysowanie tętniaka (AI)"
                     st.rerun()
@@ -765,25 +806,30 @@ def render_coronary_aneurysm_workspace():
             st.markdown("""
             <div style='background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 10px 14px; border-radius: 4px; margin-bottom: 12px;'>
                 <b style='color: #38bdf8;'>Kroki obrysowania:</b><br/>
-                1. Kliknij <b>2 do 4 punktów</b> wzdłuż światła naczynia (początek, wybrzuszenie tętniaka, koniec).<br/>
+                1. Kliknij <b>2 do 4 punktów</b> wzdłuż światła naczynia (początek, wybrzuszenie tętniaka, koniec) — punkty są precyzyjnymi czerwonymi kropkami.<br/>
                 2. Kliknij zielony przycisk <b>'🚀 Segmentuj tętniak (AI)'</b>.
             </div>
             """, unsafe_allow_html=True)
             
             canvas_key = f"seg_canvas_{case_key}_{st.session_state.get('caa_canvas_suffix', 0)}"
-            pil_for_canvas = Image.fromarray(norm_rgb)
+            annot_bg = norm_rgb.copy()
+            if active_mask is not None and np.sum(active_mask) > 0:
+                v_mask = (active_mask > 0).astype(np.uint8) * 255
+                contour_preview = angioPyFunctions.maskOutliner(labelledArtery=v_mask, outlineThickness=1)
+                annot_bg[contour_preview, :] = [0, 255, 0]
+            pil_for_canvas = Image.fromarray(annot_bg)
             
             annotation_canvas = st_canvas(
-                fill_color="rgba(239, 68, 68, 0.8)",
-                stroke_width=2,
-                stroke_color="#22c55e",
+                fill_color="#ff0000",
+                stroke_width=0,
+                stroke_color="#ff0000",
                 background_color="black",
                 background_image=pil_for_canvas,
                 update_streamlit=True,
                 height=512,
                 width=512,
                 drawing_mode="point",
-                point_display_radius=5,
+                point_display_radius=2,
                 key=canvas_key
             )
             
@@ -793,11 +839,14 @@ def render_coronary_aneurysm_workspace():
                     if annotation_canvas.json_data is not None and "objects" in annotation_canvas.json_data:
                         objs = annotation_canvas.json_data["objects"]
                         if len(objs) >= 2:
-                            with st.spinner(f"Segmentacja naczynia na podstawie {len(objs)} punktów..."):
+                            with st.spinner(f"Segmentacja naczynia silnikiem angioPy na podstawie {len(objs)} punktów..."):
                                 try:
                                     pts = []
                                     for o in objs:
-                                        pts.append([float(o.get('top', 0)), float(o.get('left', 0))])
+                                        r = float(o.get('radius', 2))
+                                        cy = float(o.get('top', 0)) + r
+                                        cx = float(o.get('left', 0)) + r
+                                        pts.append([cy, cx])
                                     pts = np.array(pts, dtype=np.float32)
                                     
                                     mask = angioPyFunctions.arterySegmentation(norm_512, pts)
