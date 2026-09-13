@@ -3443,11 +3443,34 @@ def render_coronary_aneurysm_workspace():
 
     # Saved records history
     st.markdown("---")
-    st.markdown("#### 📋 Zapisane badania tętniaków dla pacjenta:")
+    st.markdown("#### 📋 Przeglądarka archiwalnych badań tętniaków (Historia Firebase):")
+    c_hist_flt1, c_hist_flt2 = st.columns([1.5, 1.0])
+    with c_hist_flt1:
+        hist_scope = st.radio(
+            "Zakres przeglądania:",
+            [f"👤 Tylko bieżący pacjent ({active_pid})", "🌐 Wszyscy pacjenci (Archiwum)"],
+            horizontal=True,
+            key=f"caa_hist_scope_{active_pid}"
+        )
+    with c_hist_flt2:
+        filter_vessel = st.selectbox(
+            "Filtruj naczynie:",
+            ["Wszystkie", "LM (Left Main)", "LAD", "LCx", "RCA"],
+            key=f"caa_hist_vessel_{active_pid}"
+        )
+
     try:
         from firebase_admin import firestore
         db = firestore.client()
-        docs = list(db.collection("aneurysm_results").where("patient_id", "==", active_pid).stream())
+        if "Tylko bieżący" in hist_scope:
+            raw_docs = list(db.collection("aneurysm_results").where("patient_id", "==", active_pid).stream())
+        else:
+            raw_docs = list(db.collection("aneurysm_results").stream())
+            
+        docs = sorted(raw_docs, key=lambda d: str(d.to_dict().get("created_at", "")), reverse=True)
+        if filter_vessel != "Wszystkie":
+            docs = [d for d in docs if filter_vessel in str(d.to_dict().get("vessel", ""))]
+            
         if docs:
             rows = []
             doc_dict = {}
@@ -3457,34 +3480,48 @@ def render_coronary_aneurysm_workspace():
                 vol_str = f"{dt.get('simpson_total_vol_mm3')} mm³" if dt.get('simpson_total_vol_mm3') else "—"
                 excess_str = f"{dt.get('simpson_excess_vol_mm3')} mm³" if dt.get('simpson_excess_vol_mm3') else "—"
                 typ_str = "Ostialny" if dt.get("is_ostial") else "Segmentowy"
-                rows.append({
+                row_item = {
                     "ID": d.id,
+                    "Pacjent ID": dt.get("patient_id", active_pid),
+                    "Data": dt.get("created_at", "—"),
                     "Typ": typ_str,
-                    "Naczynie": dt.get("vessel"),
-                    "Segment": dt.get("aha_segment"),
-                    "Morfologia": dt.get("morphology"),
+                    "Naczynie": dt.get("vessel", "—"),
+                    "Segment": dt.get("aha_segment", "—"),
+                    "Morfologia": dt.get("morphology", "—"),
                     "Dł. tętniaka [mm]": dt.get("length_lesion_mm", dt.get("aneurysm_len_mm", "—")),
-                    "Max D1 [mm]": dt.get("d1_max_mm", dt.get("max_aneurysm_diam_mm")),
+                    "Max D1 [mm]": dt.get("d1_max_mm", dt.get("max_aneurysm_diam_mm", "—")),
                     "Max D2 [mm]": dt.get("d2_max_mm", "—"),
                     "Nadmiar V (≥1.2x)": excess_str,
                     "Objętość V_tot": vol_str,
-                    "Data": dt.get("created_at")
-                })
+                    "Raport PDF": "✅ W chmurze" if dt.get("pdf_url") else "Brak"
+                }
+                rows.append(row_item)
             st.dataframe(pd.DataFrame(rows).drop(columns=["ID"]), use_container_width=True)
             
-            with st.expander("🔍 Podgląd zapisanego obrysu tętniaka z bazy", expanded=False):
-                selected_doc_id = st.selectbox("Wybierz zapisane oznaczenie:", options=list(doc_dict.keys()), key="caa_saved_preview_select")
+            with st.expander("🔍 Szczegółowy podgląd wybranego badania z bazy", expanded=True if len(docs) == 1 else False):
+                doc_options = {d.id: f"{doc_dict[d.id].get('created_at', '')[:16]} | Pacjent: {doc_dict[d.id].get('patient_id')} | {doc_dict[d.id].get('vessel')} {doc_dict[d.id].get('aha_segment')} (Dł: {doc_dict[d.id].get('length_lesion_mm', '—')} mm, V: {doc_dict[d.id].get('simpson_total_vol_mm3', '—')} mm³)" for d in docs}
+                selected_doc_id = st.selectbox("Wybierz badanie z listy:", options=list(doc_options.keys()), format_func=lambda x: doc_options.get(x, x), key="caa_saved_preview_select")
                 if selected_doc_id:
                     saved_dt = doc_dict[selected_doc_id]
-                    st.markdown(f"**Pacjent:** `{saved_dt.get('patient_id')}` | **Naczynie:** `{saved_dt.get('vessel')}` `{saved_dt.get('aha_segment')}` | **Typ:** `{('Ostialny' if saved_dt.get('is_ostial') else 'Segmentowy')}` | **Data:** `{saved_dt.get('created_at')}`")
-                    if saved_dt.get("pdf_url"):
-                        st.markdown(f"📄 [Pobierz zapisany Raport PDF z Firebase Storage]({saved_dt['pdf_url']})")
-                    if saved_dt.get("thumbnail_b64"):
-                        img_bytes = base64.b64decode(saved_dt["thumbnail_b64"])
-                        st.image(img_bytes, caption=f"Zapisany obrys tętniaka: {saved_dt.get('vessel')} {saved_dt.get('aha_segment')} (Simpson: {saved_dt.get('simpson_total_vol_mm3')} mm³, Nadmiar V: {saved_dt.get('simpson_excess_vol_mm3')} mm³)", use_column_width=True)
-                    else:
-                        st.info("Dla tego rekordu brak zapisanego zrzutu obrysu.")
+                    c_det1, c_det2 = st.columns([1.2, 1.0])
+                    with c_det1:
+                        st.markdown(f"**Pacjent:** `{saved_dt.get('patient_id')}` | **Naczynie:** `{saved_dt.get('vessel')}` (`{saved_dt.get('aha_segment')}`)")
+                        st.markdown(f"**Typ:** `{('Ostialny' if saved_dt.get('is_ostial') else 'Segmentowy')}` | **Data:** `{saved_dt.get('created_at')}` | **Badacz:** `{saved_dt.get('annotator', '—')}`")
+                        st.markdown(f"📏 **Dmax:** `{saved_dt.get('d1_max_mm')} mm` / `{saved_dt.get('d2_max_mm')} mm` | **Długość tętniaka:** `{saved_dt.get('length_lesion_mm', saved_dt.get('aneurysm_len_mm'))} mm`")
+                        st.markdown(f"📐 **V_total:** `{saved_dt.get('simpson_total_vol_mm3')} mm³` | **Nadmiar V (≥1.2x):** `{saved_dt.get('simpson_excess_vol_mm3')} mm³`")
+                        if saved_dt.get("pdf_url"):
+                            st.markdown(f"""
+                            <a href='{saved_dt["pdf_url"]}' target='_blank' style='display: inline-block; background-color: #0284c7; color: white; padding: 6px 14px; border-radius: 6px; text-decoration: none; font-weight: bold; margin-top: 8px;'>
+                                📄 Pobierz oryginalny Raport PDF z Firebase Storage
+                            </a>
+                            """, unsafe_allow_html=True)
+                    with c_det2:
+                        if saved_dt.get("thumbnail_b64"):
+                            img_bytes = base64.b64decode(saved_dt["thumbnail_b64"])
+                            st.image(img_bytes, caption=f"Obrys z bazy: {saved_dt.get('vessel')} ({saved_dt.get('created_at', '')[:10]})", use_column_width=True)
+                        else:
+                            st.info("Brak zapisanego zrzutu obrysu dla tego badania.")
         else:
-            st.info("Brak zapisanych oznaczeń dla tego pacjenta. Wybierz i obrysuj projekcje powyżej.")
+            st.info("Brak zapisanych badań spełniających wybrane kryteria.")
     except Exception as e:
         print(f"Error fetching saved aneurysms: {e}")
