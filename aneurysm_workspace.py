@@ -255,7 +255,10 @@ def render_coronary_aneurysm_workspace():
             norm_pixels = norm_pixels.astype(np.uint8)
             
         pil_img = Image.fromarray(norm_pixels)
-        st.image(pil_img, caption=f"Frame {frame_slider + 1}/{n_frames} | {d_meta['series_desc']} | Angles: {d_meta['primary_angle']}° / {d_meta['secondary_angle']}°", use_container_width=True)
+        try:
+            st.image(pil_img, caption=f"Frame {frame_slider + 1}/{n_frames} | {d_meta['series_desc']} | Angles: {d_meta['primary_angle']}° / {d_meta['secondary_angle']}°", use_column_width=True)
+        except Exception:
+            st.image(pil_img, caption=f"Frame {frame_slider + 1}/{n_frames} | {d_meta['series_desc']} | Angles: {d_meta['primary_angle']}° / {d_meta['secondary_angle']}°")
 
     # ── 4. ANEURYSM CLASSIFICATION & QUANTITATIVE MEASUREMENTS ────────────
     with col_tools:
