@@ -879,10 +879,31 @@ def render_series_card(active_pid, name, dfp, d_meta, series_meta, meta_store_ke
                 st.session_state["caa_target_view"] = "single_delineation"
                 st.rerun()
 
+def reset_patient_workspace(active_pid):
+    """
+    Completely resets all series choices, AHA assignments, calibrations, masks,
+    profiles, landmarks, and paired views for the given patient.
+    """
+    meta_store_key = f"caa_series_meta_{active_pid}"
+    st.session_state.pop(meta_store_key, None)
+    
+    keys_to_clear = [k for k in list(st.session_state.keys()) if k.startswith("caa_") and active_pid in k]
+    for k in keys_to_clear:
+        st.session_state.pop(k, None)
+        
+    for k in ["caa_active_pair", "caa_active_biplane_pair", "caa_active_series_name", "caa_target_view"]:
+        st.session_state.pop(k, None)
+
 # ── 1. WIDOK: PRZEGLĄD WSZYSTKICH PROJEKCJI Z KORONAROGRAFII (GALLERY) ────────
 def render_projections_gallery(active_pid, series_map):
-    st.markdown(f"### 🗂️ Przegląd wszystkich projekcji koronarografii *(Dostępnych projekcji: {len(series_map)})*")
-    st.markdown("Wybierz projekcje do analizy. **Gdy wybierzesz dwie projekcje dla tego samego segmentu (pod różnymi kątami), system automatycznie połączy je w parę do jednoczesnego obrysowania i wyliczenia objętości 3D Simpsona.**")
+    c_hdr1, c_hdr2 = st.columns([3.2, 1.2])
+    with c_hdr1:
+        st.markdown(f"### 🗂️ Przegląd wszystkich projekcji koronarografii *(Dostępnych projekcji: {len(series_map)})*")
+        st.markdown("Wybierz projekcje do analizy. **Gdy wybierzesz dwie projekcje dla tego samego segmentu (pod różnymi kątami), system automatycznie połączy je w parę do jednoczesnego obrysowania i wyliczenia objętości 3D Simpsona.**")
+    with c_hdr2:
+        if st.button("🔄 Zresetuj wybory", key=f"btn_reset_all_choices_{active_pid}", help="Cofa wszystkie zaznaczenia, kalibracje i obrysy dla tego pacjenta", use_container_width=True):
+            reset_patient_workspace(active_pid)
+            st.rerun()
     
     meta_store_key = f"caa_series_meta_{active_pid}"
     if meta_store_key not in st.session_state:
@@ -897,7 +918,7 @@ def render_projections_gallery(active_pid, series_map):
                 "vessel_system": ALL_SYSTEM_NAMES[0],
                 "aha_code": _seg_codes(ALL_SYSTEM_NAMES[0])[1] if len(_seg_codes(ALL_SYSTEM_NAMES[0])) > 1 else _seg_codes(ALL_SYSTEM_NAMES[0])[0],
                 "aha_label": _seg_labels(ALL_SYSTEM_NAMES[0])[1] if len(_seg_labels(ALL_SYSTEM_NAMES[0])) > 1 else _seg_labels(ALL_SYSTEM_NAMES[0])[0],
-                "chosen_for_analysis": (idx < 2)  # default select first two
+                "chosen_for_analysis": False
             }
             
     # Auto-detect biplane pairs
@@ -2124,6 +2145,14 @@ def render_coronary_aneurysm_workspace():
 
     # Top-level view router
     view_key = f"caa_view_mode_{active_pid}"
+    
+    # Auto-reset previously forced defaults for test patient once
+    auto_reset_key = f"caa_auto_reset_done_{active_pid}_v3"
+    if active_pid == "test" and auto_reset_key not in st.session_state:
+        st.session_state[auto_reset_key] = True
+        reset_patient_workspace(active_pid)
+        st.rerun()
+
     if "caa_target_view" in st.session_state:
         st.session_state[view_key] = st.session_state.pop("caa_target_view")
     if view_key not in st.session_state:
@@ -2147,6 +2176,10 @@ def render_coronary_aneurysm_workspace():
         index=current_idx,
         key=f"rad_view_{active_pid}"
     )
+    
+    if st.sidebar.button("🔄 Zresetuj wybory pacjenta", key=f"btn_sb_reset_{active_pid}", use_container_width=True):
+        reset_patient_workspace(active_pid)
+        st.rerun()
     if view_choice == "🗂️ Przegląd projekcji (Gallery)" and st.session_state[view_key] != "gallery":
         st.session_state[view_key] = "gallery"
         st.rerun()
