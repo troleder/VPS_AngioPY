@@ -3033,7 +3033,19 @@ def render_biplane_results_content(active_pid, pair, series_map):
                 "dilation_ratio_1": simp["dilation_ratio_1"],
                 "dilation_ratio_2": simp["dilation_ratio_2"],
                 "length_mm": simp["L"],
+                "length_ref_ref_mm": simp.get("L_ref_ref", simp["L"]),
+                "length_healthy_mm": simp.get("L_healthy", 0.0),
+                "length_neck_mm": simp.get("L_neck", 0.0),
+                "length_sac_mm": simp.get("L_sac", 0.0),
+                "length_lesion_mm": simp.get("L_lesion", simp.get("aneurysm_len", simp["L"])),
                 "aneurysm_len_mm": simp.get("aneurysm_len", simp["L"]),
+                "vol_healthy_mm3": simp.get("V_healthy", 0.0),
+                "vol_neck_total_mm3": simp.get("V_neck_total", 0.0),
+                "vol_neck_excess_mm3": simp.get("V_neck_excess", 0.0),
+                "vol_sac_total_mm3": simp.get("V_sac_total", 0.0),
+                "vol_sac_excess_mm3": simp.get("V_sac_excess", 0.0),
+                "is_ostial": bool(simp.get("is_ostial", False)),
+                "ostial_ref_mm": simp.get("ostial_ref"),
                 "d1_slices_mm": simp.get("D1_slices", []),
                 "d2_slices_mm": simp.get("D2_slices", []),
                 "s_slices_mm": simp.get("s_slices", []),
@@ -3437,15 +3449,19 @@ def render_coronary_aneurysm_workspace():
                 dt = d.to_dict()
                 doc_dict[d.id] = dt
                 vol_str = f"{dt.get('simpson_total_vol_mm3')} mm³" if dt.get('simpson_total_vol_mm3') else "—"
+                excess_str = f"{dt.get('simpson_excess_vol_mm3')} mm³" if dt.get('simpson_excess_vol_mm3') else "—"
+                typ_str = "Ostialny" if dt.get("is_ostial") else "Segmentowy"
                 rows.append({
                     "ID": d.id,
+                    "Typ": typ_str,
                     "Naczynie": dt.get("vessel"),
                     "Segment": dt.get("aha_segment"),
                     "Morfologia": dt.get("morphology"),
+                    "Dł. tętniaka [mm]": dt.get("length_lesion_mm", dt.get("aneurysm_len_mm", "—")),
                     "Max D1 [mm]": dt.get("d1_max_mm", dt.get("max_aneurysm_diam_mm")),
                     "Max D2 [mm]": dt.get("d2_max_mm", "—"),
-                    "Ekscentryczność": dt.get("eccentricity", "—"),
-                    "Objętość 3D Simpsona": vol_str,
+                    "Nadmiar V (≥1.2x)": excess_str,
+                    "Objętość V_tot": vol_str,
                     "Data": dt.get("created_at")
                 })
             st.dataframe(pd.DataFrame(rows).drop(columns=["ID"]), use_container_width=True)
@@ -3454,10 +3470,12 @@ def render_coronary_aneurysm_workspace():
                 selected_doc_id = st.selectbox("Wybierz zapisane oznaczenie:", options=list(doc_dict.keys()), key="caa_saved_preview_select")
                 if selected_doc_id:
                     saved_dt = doc_dict[selected_doc_id]
-                    st.markdown(f"**Pacjent:** `{saved_dt.get('patient_id')}` | **Naczynie:** `{saved_dt.get('vessel')}` `{saved_dt.get('aha_segment')}` | **Data:** `{saved_dt.get('created_at')}`")
+                    st.markdown(f"**Pacjent:** `{saved_dt.get('patient_id')}` | **Naczynie:** `{saved_dt.get('vessel')}` `{saved_dt.get('aha_segment')}` | **Typ:** `{('Ostialny' if saved_dt.get('is_ostial') else 'Segmentowy')}` | **Data:** `{saved_dt.get('created_at')}`")
+                    if saved_dt.get("pdf_url"):
+                        st.markdown(f"📄 [Pobierz zapisany Raport PDF z Firebase Storage]({saved_dt['pdf_url']})")
                     if saved_dt.get("thumbnail_b64"):
                         img_bytes = base64.b64decode(saved_dt["thumbnail_b64"])
-                        st.image(img_bytes, caption=f"Zapisany obrys tętniaka: {saved_dt.get('vessel')} {saved_dt.get('aha_segment')} (Simpson: {saved_dt.get('simpson_total_vol_mm3')} mm³, Ekscentryczność: {saved_dt.get('eccentricity')})", use_column_width=True)
+                        st.image(img_bytes, caption=f"Zapisany obrys tętniaka: {saved_dt.get('vessel')} {saved_dt.get('aha_segment')} (Simpson: {saved_dt.get('simpson_total_vol_mm3')} mm³, Nadmiar V: {saved_dt.get('simpson_excess_vol_mm3')} mm³)", use_column_width=True)
                     else:
                         st.info("Dla tego rekordu brak zapisanego zrzutu obrysu.")
         else:
