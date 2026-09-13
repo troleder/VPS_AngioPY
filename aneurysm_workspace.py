@@ -797,10 +797,92 @@ def find_biplane_pairs(series_map, series_meta):
             })
     return pairs
 
+def render_series_card(active_pid, name, dfp, d_meta, series_meta, meta_store_key, card_idx=0, prefix="card"):
+    m = series_meta[name]
+    chosen = m.get("chosen_for_analysis", False)
+    chosen_badge = "⭐ " if chosen else ""
+    
+    active_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(dfp)}", 0)
+    has_mask = bool(st.session_state.get(f"caa_mask_{active_pid}_{os.path.basename(dfp)}_{active_fr}") is not None)
+    status_dot = "🟢" if has_mask else "⚪"
+    
+    with st.expander(f"{status_dot} {chosen_badge}Seria: {d_meta['series_desc']} (Kąty: {d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°, {d_meta['total_frames']} klatek)", expanded=True):
+        # 1. Controls row: Chosen checkbox + Vessel System & AHA Segment
+        c_top_chk, c_v1, c_v2 = st.columns([1.2, 1.8, 2.0])
+        with c_top_chk:
+            new_chosen = st.checkbox("⭐ Wybierz do analizy", value=chosen, key=f"chk_chosen_{prefix}_{active_pid}_{card_idx}")
+            if new_chosen != chosen:
+                m["chosen_for_analysis"] = new_chosen
+                st.session_state[meta_store_key] = series_meta
+                st.rerun()
+        with c_v1:
+            cur_sys = m.get("vessel_system") or ALL_SYSTEM_NAMES[0]
+            if cur_sys not in ALL_SYSTEM_NAMES: cur_sys = ALL_SYSTEM_NAMES[0]
+            chosen_sys = st.selectbox("Naczynie:", ALL_SYSTEM_NAMES, index=ALL_SYSTEM_NAMES.index(cur_sys), key=f"vessel_sys_{prefix}_{active_pid}_{card_idx}")
+            if chosen_sys != cur_sys:
+                m["vessel_system"] = chosen_sys
+                m["aha_label"] = _seg_labels(chosen_sys)[0]
+                m["aha_code"] = _seg_codes(chosen_sys)[0]
+                st.session_state[meta_store_key] = series_meta
+                st.rerun()
+        with c_v2:
+            seg_labels = _seg_labels(chosen_sys)
+            seg_codes = _seg_codes(chosen_sys)
+            cur_lbl = m.get("aha_label") or seg_labels[0]
+            if cur_lbl not in seg_labels: cur_lbl = seg_labels[0]
+            chosen_lbl = st.selectbox("Segment AHA:", seg_labels, index=seg_labels.index(cur_lbl), key=f"aha_seg_{prefix}_{active_pid}_{card_idx}")
+            if chosen_lbl != cur_lbl:
+                m["aha_label"] = chosen_lbl
+                m["aha_code"] = seg_codes[seg_labels.index(chosen_lbl)]
+                st.session_state[meta_store_key] = series_meta
+                st.rerun()
+
+        # 2. Preview image row: 3-panel strip (Start | Peak QCA | Last Frame) or animated CINE
+        play_state = st.session_state.get(f"play_gif_{prefix}_{active_pid}_{card_idx}", False)
+        if play_state:
+            gif_path = get_series_gif(dfp, d_meta["pixels"], d_meta.get("cine_rate", 15))
+            if gif_path:
+                safe_display_image(gif_path, caption=f"Animacja sekwencji | {d_meta['total_frames']} klatek")
+            else:
+                norm_f = get_norm_512(d_meta["pixels"][min(int(d_meta['total_frames']/2), d_meta['total_frames']-1)])
+                safe_display_image(norm_f, caption=f"Klatka środkowa")
+        else:
+            fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
+            b_ix, s_ix, e_ix = analyze_series_flow(dfp, fsize)
+            combined = get_preview_image(dfp, s_ix, b_ix, e_ix, fsize)
+            if combined is not None:
+                safe_display_image(Image.fromarray(combined), caption=f"Start (Klatka {s_ix+1}) | Peak QCA (Klatka {b_ix+1}) | Last Frame (Klatka {e_ix+1})")
+            else:
+                norm_f = get_norm_512(d_meta["pixels"][min(int(d_meta['total_frames']/2), d_meta['total_frames']-1)])
+                safe_display_image(norm_f, caption=f"Klatka referencyjna (Kąty: {d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°)")
+
+        # 3. Bottom row: metadata & action buttons
+        c_b1, c_b2, c_b3 = st.columns([1, 1.8, 1.4])
+        with c_b1:
+            btn_lbl = "⏹️ Stop" if play_state else "🎥 Odtwórz CINE"
+            if st.button(btn_lbl, key=f"btn_play_{prefix}_{active_pid}_{card_idx}", use_container_width=True):
+                st.session_state[f"play_gif_{prefix}_{active_pid}_{card_idx}"] = not play_state
+                st.rerun()
+        with c_b2:
+            if has_mask:
+                prof = st.session_state.get(f"caa_prof_{active_pid}_{os.path.basename(dfp)}_{active_fr}")
+                dmax_txt = f"{prof['max_diam_mm']} mm" if prof else ""
+                st.success(f"🟢 Obrysowana (Klatka {active_fr + 1}, Dmax={dmax_txt})")
+            else:
+                st.caption(f"Kąty: **{d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°** | Klatki: **{d_meta['total_frames']}** | Skala: **{d_meta['spacing']:.3f} mm**")
+        with c_b3:
+            if st.button("🎯 Obrysuj tę projekcję", key=f"btn_delineate_{prefix}_{active_pid}_{card_idx}", type="primary", use_container_width=True):
+                st.session_state["caa_active_series_name"] = name
+                fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
+                b_ix, _, _ = analyze_series_flow(dfp, fsize)
+                st.session_state[f"caa_frame_{active_pid}_{os.path.basename(dfp)}"] = b_ix
+                st.session_state["caa_target_view"] = "single_delineation"
+                st.rerun()
+
 # ── 1. WIDOK: PRZEGLĄD WSZYSTKICH PROJEKCJI Z KORONAROGRAFII (GALLERY) ────────
 def render_projections_gallery(active_pid, series_map):
     st.markdown(f"### 🗂️ Przegląd wszystkich projekcji koronarografii *(Dostępnych projekcji: {len(series_map)})*")
-    st.markdown("Automatycznie wyodrębnione optymalne klatki kontrastu ze wszystkich dostępnych projekcji DICOM. **Gdy wybierzesz dwie projekcje dla tego samego segmentu (pod różnymi kątami), system automatycznie wyliczy z nich objętość 3D Simpsona.**")
+    st.markdown("Wybierz projekcje do analizy. **Gdy wybierzesz dwie projekcje dla tego samego segmentu (pod różnymi kątami), system automatycznie połączy je w parę do jednoczesnego obrysowania i wyliczenia objętości 3D Simpsona.**")
     
     meta_store_key = f"caa_series_meta_{active_pid}"
     if meta_store_key not in st.session_state:
@@ -850,113 +932,105 @@ def render_projections_gallery(active_pid, series_map):
             </div>
             """, unsafe_allow_html=True)
             
-            c_pair_btn1, c_pair_btn2, c_pair_btn3 = st.columns([1.5, 1.2, 1.2])
+            c_pair_btn0, c_pair_btn1, c_pair_btn2, c_pair_btn3 = st.columns([1.6, 1.4, 1.0, 1.0])
+            with c_pair_btn0:
+                if st.button(f"✨ Obrysuj razem w parze ({pair['aha_label']})", key=f"btn_pair_delineate_top_{p_idx}", type="primary", use_container_width=True):
+                    st.session_state["caa_active_pair"] = pair
+                    st.session_state["caa_target_view"] = "paired_delineation"
+                    st.session_state[f"caa_pair_substep_{active_pid}"] = "1️⃣ Kalibracja cewnika (P1 i P2)"
+                    st.rerun()
             with c_pair_btn1:
                 if p1_has_mask and p2_has_mask:
-                    btn_text = f"🚀 Otwórz analizę biplanarną Simpsona 3D ({pair['aha_label']})"
+                    btn_text = f"🚀 Wyniki Simpsona 3D"
                     btn_type = "primary"
                 else:
-                    btn_text = f"🔍 Otwórz widok biplanarny Simpsona 3D ({pair['aha_label']})"
+                    btn_text = f"🔍 Widok Simpsona 3D"
                     btn_type = "secondary"
                 if st.button(btn_text, key=f"btn_open_biplane_pair_{p_idx}", type=btn_type, use_container_width=True):
                     st.session_state["caa_active_biplane_pair"] = pair
                     st.session_state["caa_target_view"] = "biplane_simpson"
                     st.rerun()
             with c_pair_btn2:
-                if st.button(f"🎯 Obrysuj Projekcję 1", key=f"btn_outline_p1_{p_idx}", use_container_width=True):
+                if st.button(f"🎯 Projekcja 1", key=f"btn_outline_p1_{p_idx}", use_container_width=True):
                     st.session_state["caa_active_series_name"] = pair["p1_name"]
                     st.session_state["caa_target_view"] = "single_delineation"
                     st.rerun()
             with c_pair_btn3:
-                if st.button(f"🎯 Obrysuj Projekcję 2", key=f"btn_outline_p2_{p_idx}", use_container_width=True):
+                if st.button(f"🎯 Projekcja 2", key=f"btn_outline_p2_{p_idx}", use_container_width=True):
                     st.session_state["caa_active_series_name"] = pair["p2_name"]
                     st.session_state["caa_target_view"] = "single_delineation"
                     st.rerun()
         st.markdown("---")
-        
-    st.markdown("#### 📺 Siatka wszystkich sekwencji z badania:")
-    
-    for idx, (name, (dfp, d_meta)) in enumerate(series_map.items()):
-        m = series_meta[name]
-        chosen = m.get("chosen_for_analysis", False)
-        chosen_badge = "⭐ " if chosen else ""
-        
-        active_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(dfp)}", 0)
-        has_mask = bool(st.session_state.get(f"caa_mask_{active_pid}_{os.path.basename(dfp)}_{active_fr}") is not None)
-        status_dot = "🟢" if has_mask else "⚪"
-        
-        with st.expander(f"{status_dot} {chosen_badge}Seria #{idx+1}: {d_meta['series_desc']} (Kąty: {d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°, {d_meta['total_frames']} klatek)", expanded=True):
-            # 1. Controls row: Chosen checkbox + Vessel System & AHA Segment
-            c_top_chk, c_v1, c_v2 = st.columns([1.2, 1.8, 2.0])
-            with c_top_chk:
-                new_chosen = st.checkbox("⭐ Wybierz do analizy", value=chosen, key=f"chk_chosen_{active_pid}_{idx}")
-                if new_chosen != chosen:
-                    m["chosen_for_analysis"] = new_chosen
-                    st.session_state[meta_store_key] = series_meta
-                    st.rerun()
-            with c_v1:
-                cur_sys = m.get("vessel_system") or ALL_SYSTEM_NAMES[0]
-                if cur_sys not in ALL_SYSTEM_NAMES: cur_sys = ALL_SYSTEM_NAMES[0]
-                chosen_sys = st.selectbox("Naczynie:", ALL_SYSTEM_NAMES, index=ALL_SYSTEM_NAMES.index(cur_sys), key=f"vessel_sys_{active_pid}_{idx}")
-                if chosen_sys != cur_sys:
-                    m["vessel_system"] = chosen_sys
-                    m["aha_label"] = _seg_labels(chosen_sys)[0]
-                    m["aha_code"] = _seg_codes(chosen_sys)[0]
-                    st.session_state[meta_store_key] = series_meta
-                    st.rerun()
-            with c_v2:
-                seg_labels = _seg_labels(chosen_sys)
-                seg_codes = _seg_codes(chosen_sys)
-                cur_lbl = m.get("aha_label") or seg_labels[0]
-                if cur_lbl not in seg_labels: cur_lbl = seg_labels[0]
-                chosen_lbl = st.selectbox("Segment AHA:", seg_labels, index=seg_labels.index(cur_lbl), key=f"aha_seg_{active_pid}_{idx}")
-                if chosen_lbl != cur_lbl:
-                    m["aha_label"] = chosen_lbl
-                    m["aha_code"] = seg_codes[seg_labels.index(chosen_lbl)]
-                    st.session_state[meta_store_key] = series_meta
-                    st.rerun()
 
-            # 2. Preview image row: 3-panel strip (Start | Peak QCA | Last Frame) or animated CINE
-            play_state = st.session_state.get(f"play_gif_{active_pid}_{idx}", False)
-            if play_state:
-                gif_path = get_series_gif(dfp, d_meta["pixels"], d_meta.get("cine_rate", 15))
-                if gif_path:
-                    safe_display_image(gif_path, caption=f"Animacja sekwencji | {d_meta['total_frames']} klatek")
-                else:
-                    norm_f = get_norm_512(d_meta["pixels"][min(int(d_meta['total_frames']/2), d_meta['total_frames']-1)])
-                    safe_display_image(norm_f, caption=f"Klatka środkowa")
-            else:
-                fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
-                b_ix, s_ix, e_ix = analyze_series_flow(dfp, fsize)
-                combined = get_preview_image(dfp, s_ix, b_ix, e_ix, fsize)
-                if combined is not None:
-                    safe_display_image(Image.fromarray(combined), caption=f"Start (Klatka {s_ix+1}) | Peak QCA (Klatka {b_ix+1}) | Last Frame (Klatka {e_ix+1})")
-                else:
-                    norm_f = get_norm_512(d_meta["pixels"][min(int(d_meta['total_frames']/2), d_meta['total_frames']-1)])
-                    safe_display_image(norm_f, caption=f"Klatka referencyjna (Kąty: {d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°)")
+    # Partition into chosen and unchosen
+    all_series_items = list(series_map.items())
+    chosen_items = [(name, dfp, d_meta) for (name, (dfp, d_meta)) in all_series_items if series_meta.get(name, {}).get("chosen_for_analysis")]
+    unchosen_items = [(name, dfp, d_meta) for (name, (dfp, d_meta)) in all_series_items if not series_meta.get(name, {}).get("chosen_for_analysis")]
 
-            # 3. Bottom row: metadata & action buttons
-            c_b1, c_b2, c_b3 = st.columns([1, 1.8, 1.4])
-            with c_b1:
-                btn_lbl = "⏹️ Stop" if play_state else "🎥 Odtwórz CINE"
-                if st.button(btn_lbl, key=f"btn_play_{active_pid}_{idx}", use_container_width=True):
-                    st.session_state[f"play_gif_{active_pid}_{idx}"] = not play_state
-                    st.rerun()
-            with c_b2:
-                if has_mask:
-                    prof = st.session_state.get(f"caa_prof_{active_pid}_{os.path.basename(dfp)}_{active_fr}")
-                    dmax_txt = f"{prof['max_diam_mm']} mm" if prof else ""
-                    st.success(f"🟢 Obrysowana (Klatka {active_fr + 1}, Dmax={dmax_txt})")
-                else:
-                    st.caption(f"Kąty: **{d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°** | Klatki: **{d_meta['total_frames']}** | Skala: **{d_meta['spacing']:.3f} mm**")
-            with c_b3:
-                if st.button("🎯 Obrysuj tę projekcję", key=f"btn_delineate_{active_pid}_{idx}", type="primary", use_container_width=True):
-                    st.session_state["caa_active_series_name"] = name
-                    fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
-                    b_ix, _, _ = analyze_series_flow(dfp, fsize)
-                    st.session_state[f"caa_frame_{active_pid}_{os.path.basename(dfp)}"] = b_ix
-                    st.session_state["caa_target_view"] = "single_delineation"
-                    st.rerun()
+    # Sort chosen items by vessel system and AHA segment
+    def _item_sort_key(item):
+        name, dfp, d_meta = item
+        m = series_meta.get(name, {})
+        vsys = m.get("vessel_system", ALL_SYSTEM_NAMES[0])
+        code = m.get("aha_code", "99")
+        v_order = {"LM & LAD – Left Main & Left Anterior Descending": 1, "LCx – Left Circumflex": 2, "RCA – Right Coronary Artery": 3}.get(vsys, 99)
+        try:
+            s_order = _seg_codes(vsys).index(code)
+        except ValueError:
+            s_order = 99
+        return (v_order, s_order, name)
+
+    chosen_items.sort(key=_item_sort_key)
+
+    # 1. Chosen section: sorted and placed one under the other (jedne pod drugą)
+    st.markdown(f"#### 🎯 Projekcje wybrane do analizy ({len(chosen_items)}):")
+    st.caption("Wybrane sekwencje są posortowane anatomicznie i ułożone jedne pod drugą. Projekcje dla tego samego segmentu tworzą parę do jednoczesnej analizy.")
+
+    if chosen_items:
+        # Group adjacent items by (vessel_system, aha_code)
+        from itertools import groupby
+        for (vsys, code), group_iter in groupby(chosen_items, key=lambda it: (series_meta.get(it[0], {}).get("vessel_system"), series_meta.get(it[0], {}).get("aha_code"))):
+            group_list = list(group_iter)
+            group_label = series_meta.get(group_list[0][0], {}).get("aha_label", f"{vsys} Seg {code}")
+            
+            if len(group_list) >= 2:
+                p1_it, p2_it = group_list[0], group_list[1]
+                p_diff = compute_3d_angle_diff(p1_it[2]["primary_angle"], p1_it[2]["secondary_angle"], p2_it[2]["primary_angle"], p2_it[2]["secondary_angle"])
+                
+                c_grp1, c_grp2 = st.columns([2.5, 1.5])
+                with c_grp1:
+                    st.markdown(f"##### 🔗 Para biplanarna: `{group_label}` (Kąt 3D: **{p_diff:.1f}°**)")
+                with c_grp2:
+                    matched_pair_obj = None
+                    for dp in detected_pairs:
+                        if dp["system"] == vsys and dp["aha_code"] == code:
+                            matched_pair_obj = dp
+                            break
+                    if not matched_pair_obj:
+                        matched_pair_obj = {
+                            "system": vsys,
+                            "aha_code": code,
+                            "aha_label": group_label,
+                            "p1_name": p1_it[0], "p1_dfp": p1_it[1], "p1_meta": p1_it[2],
+                            "p2_name": p2_it[0], "p2_dfp": p2_it[1], "p2_meta": p2_it[2],
+                            "angle_diff": p_diff
+                        }
+                    if st.button(f"✨ Obrysuj razem dla {group_label}", key=f"btn_inline_pair_{vsys}_{code}", type="primary", use_container_width=True):
+                        st.session_state["caa_active_pair"] = matched_pair_obj
+                        st.session_state["caa_target_view"] = "paired_delineation"
+                        st.session_state[f"caa_pair_substep_{active_pid}"] = "1️⃣ Kalibracja cewnika (P1 i P2)"
+                        st.rerun()
+
+            for c_idx, (name, dfp, d_meta) in enumerate(group_list):
+                render_series_card(active_pid, name, dfp, d_meta, series_meta, meta_store_key, card_idx=f"chosen_{c_idx}_{name[:12]}", prefix="chosen")
+    else:
+        st.info("ℹ️ Nie wybrano jeszcze żadnej projekcji do analizy. Zaznacz '⭐ Wybierz do analizy' przy co najmniej 1–2 projekcjach poniżej.")
+
+    # 2. Unchosen section: under expander
+    st.markdown("---")
+    with st.expander(f"🗂️ Wszystkie pozostałe projekcje z badania ({len(unchosen_items)})", expanded=(len(chosen_items) == 0)):
+        for u_idx, (name, dfp, d_meta) in enumerate(unchosen_items):
+            render_series_card(active_pid, name, dfp, d_meta, series_meta, meta_store_key, card_idx=f"unchosen_{u_idx}_{name[:12]}", prefix="unchosen")
 
 # ── 2. WIDOK: OBRYSOWANIE POJEDYNCZEJ PROJEKCJI ──────────────────────────────
 def render_single_delineation_view(active_pid, series_map):
@@ -1333,43 +1407,263 @@ def render_single_delineation_view(active_pid, series_map):
                 st.session_state["caa_target_view"] = "gallery"
                 st.rerun()
 
-# ── 3. WIDOK: SIMPSON 3D (WYNIKI BIPLANE Z OBU OBRYSÓW) ───────────────────────
-def render_biplane_simpson_view(active_pid, series_map):
-    pair = st.session_state.get("caa_active_biplane_pair", None)
-    meta_store = st.session_state.get(f"caa_series_meta_{active_pid}", {})
+def render_catheter_calibration_widget(active_pid, p_name, p_dfp, p_meta, tag="P1"):
+    dfp = p_dfp
+    d_meta = p_meta
+    n_frames = d_meta["total_frames"]
+    frame_key = f"caa_frame_{active_pid}_{os.path.basename(dfp)}"
+    if frame_key not in st.session_state:
+        fsize = os.path.getsize(dfp) if os.path.exists(dfp) else None
+        b_ix, _, _ = analyze_series_flow(dfp, fsize)
+        st.session_state[frame_key] = b_ix
+        
+    c_sl1, c_sl2 = st.columns([2.5, 1.5])
+    with c_sl1:
+        frame_slider = st.slider(f"Numer klatki ({tag}):", 0, max(0, n_frames - 1), value=st.session_state[frame_key], key=f"sl_frame_cal_{tag}_{active_pid}_{os.path.basename(dfp)}")
+        st.session_state[frame_key] = frame_slider
+    with c_sl2:
+        st.caption(f"Kąty: **{d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°** ({d_meta['series_desc']})")
+        
+    frame_pixels = d_meta["pixels"][frame_slider]
+    norm_512 = get_norm_512(frame_pixels)
+    norm_rgb = cv2.cvtColor(norm_512, cv2.COLOR_GRAY2RGB)
+    dicom_mm_pp = d_meta["spacing"] * (d_meta["pixels"].shape[-1] / 512.0)
     
-    detected_pairs = find_biplane_pairs(series_map, meta_store)
+    case_key = f"{active_pid}_{os.path.basename(dfp)}_{frame_slider}"
+    calib_key = f"caa_calib_{active_pid}_{os.path.basename(dfp)}"
+    calib_info = st.session_state.get(calib_key, None)
     
-    c_top1, c_top2 = st.columns([3, 1])
-    with c_top1:
-        st.markdown(f"### 🌐 Wyniki Simpsona 3D i Ekscentryczność z obu obrysów")
-    with c_top2:
-        if st.button("🔙 Wróć do galerii", use_container_width=True):
-            st.session_state["caa_target_view"] = "gallery"
-            st.rerun()
+    col_vis, col_params = st.columns([1.3, 1])
+    with col_vis:
+        st.markdown(f"##### 📏 Wskaż 2 punkty na cewniku dla {tag} ({d_meta['series_desc']})")
+        calib_bg = norm_rgb.copy()
+        if calib_info is not None:
+            if "lw" in calib_info and "rw" in calib_info:
+                for pt in calib_info["lw"]:
+                    cv2.circle(calib_bg, (int(round(pt[0])), int(round(pt[1]))), 2, (0, 255, 0), -1)
+                for pt in calib_info["rw"]:
+                    cv2.circle(calib_bg, (int(round(pt[0])), int(round(pt[1]))), 2, (0, 255, 0), -1)
+            if "click1" in calib_info and "click2" in calib_info:
+                p1_i, p2_i = calib_info["click1"], calib_info["click2"]
+                cv2.line(calib_bg, p1_i, p2_i, (0, 255, 0), 1)
+                cv2.circle(calib_bg, p1_i, 3, (0, 0, 255), -1)
+                cv2.circle(calib_bg, p2_i, 3, (0, 0, 255), -1)
+                
+        calib_canvas_key = f"calib_cv_{tag}_{case_key}_{st.session_state.get('caa_calib_sfx', 0)}"
+        c_canvas = st_canvas(
+            fill_color="#ff0000",
+            stroke_width=0,
+            stroke_color="#ff0000",
+            background_color="black",
+            background_image=Image.fromarray(calib_bg),
+            update_streamlit=True,
+            height=512,
+            width=512,
+            drawing_mode="point",
+            point_display_radius=2,
+            key=calib_canvas_key
+        )
+        
+    with col_params:
+        st.markdown(f"##### Parametry cewnika ({tag})")
+        CATHETER_SIZES = {
+            "6F = 1.98 mm": 1.98,
+            "5F = 1.67 mm": 1.67,
+            "7F = 2.33 mm": 2.33,
+            "4F = 1.35 mm": 1.35,
+            "8F = 2.67 mm": 2.67,
+            "Własny rozmiar (Custom mm)": None
+        }
+        cat_choice = st.selectbox(f"Rozmiar cewnika ({tag}):", list(CATHETER_SIZES.keys()), index=0, key=f"caa_cat_{tag}_{case_key}")
+        if cat_choice == "Własny rozmiar (Custom mm)":
+            catheter_mm = st.number_input(f"Średnica cewnika [mm] ({tag}):", min_value=0.5, max_value=5.0, value=1.98, step=0.05, key=f"caa_cat_mm_{tag}_{case_key}")
+        else:
+            catheter_mm = CATHETER_SIZES[cat_choice]
             
-    # Pair selector if multiple exist
-    if detected_pairs:
-        pair_labels = [f"Segment: {p['aha_label']} | {p['p1_meta']['series_desc']} & {p['p2_meta']['series_desc']} (Kąt 3D: {p['angle_diff']:.1f}°)" for p in detected_pairs]
-        cur_p_idx = 0
-        if pair:
-            for i, p in enumerate(detected_pairs):
-                if p["p1_name"] == pair["p1_name"] and p["p2_name"] == pair["p2_name"]:
-                    cur_p_idx = i
-                    break
-        chosen_pair_idx = st.selectbox("Wybierz parę biplanarną do obliczeń:", range(len(detected_pairs)), format_func=lambda i: pair_labels[i], index=cur_p_idx)
-        pair = detected_pairs[chosen_pair_idx]
-        st.session_state["caa_active_biplane_pair"] = pair
-    elif pair is None:
-        st.warning("Brak wybranej pary biplanarnej. Wróć do galerii i oznacz dwie projekcje tym samym segmentem AHA.")
-        if st.button("👉 Przejdź do galerii", type="primary"):
-            st.session_state["caa_target_view"] = "gallery"
+        if calib_info is not None and (calib_info.get("catheter_mm") != catheter_mm or calib_info.get("catheter_name") != cat_choice):
+            calib_info["catheter_name"] = cat_choice
+            calib_info["catheter_mm"] = catheter_mm
+            calib_info["mm_per_pixel"] = float(catheter_mm / calib_info["avg_diam_px"])
+            st.session_state[calib_key] = calib_info
             st.rerun()
-        return
 
+        if c_canvas.json_data is not None and "objects" in c_canvas.json_data:
+            objs = c_canvas.json_data["objects"]
+            if len(objs) >= 2:
+                r1 = float(objs[0].get('radius', 2))
+                p1 = (float(objs[0].get('left', 0)) + r1, float(objs[0].get('top', 0)) + r1)
+                r2 = float(objs[1].get('radius', 2))
+                p2 = (float(objs[1].get('left', 0)) + r2, float(objs[1].get('top', 0)) + r2)
+                
+                eval_sig = (round(p1[0], 1), round(p1[1], 1), round(p2[0], 1), round(p2[1], 1), catheter_mm, cat_choice)
+                last_sig = st.session_state.get(f"caa_last_calib_eval_{tag}_{case_key}", None)
+                
+                if last_sig != eval_sig:
+                    st.session_state[f"caa_last_calib_eval_{tag}_{case_key}"] = eval_sig
+                    res = calibrate_catheter(norm_512, p1, p2, catheter_mm)
+                    if res is not None:
+                        res["catheter_name"] = cat_choice
+                        res["catheter_mm"] = catheter_mm
+                        st.session_state[calib_key] = res
+                        st.session_state["caa_calib_sfx"] = st.session_state.get("caa_calib_sfx", 0) + 1
+                        st.rerun()
+                    else:
+                        st.error("⚠️ Nie udało się precyzyjnie wykryć krawędzi cewnika. Wskaż 2 punkty w prostym, widocznym odcinku cewnika.")
+                        
+        if calib_info is not None:
+            st.success(f"✅ Skalibrowano ({calib_info.get('catheter_name', cat_choice)}): **{calib_info['mm_per_pixel']:.4f} mm/px**")
+            if st.button(f"🔄 Skasuj kalibrację {tag}", key=f"btn_reset_cal_{tag}_{case_key}", use_container_width=True):
+                st.session_state.pop(calib_key, None)
+                st.session_state.pop(f"caa_last_calib_eval_{tag}_{case_key}", None)
+                st.session_state["caa_calib_sfx"] = st.session_state.get("caa_calib_sfx", 0) + 1
+                st.rerun()
+        else:
+            st.info(f"ℹ️ Domyślna skala DICOM: **{dicom_mm_pp:.4f} mm/px**")
+            if st.button(f"⚡ Zaakceptuj skalę DICOM dla {tag}", key=f"btn_acc_dcm_{tag}_{case_key}", use_container_width=True):
+                st.session_state[calib_key] = {
+                    "mm_per_pixel": dicom_mm_pp,
+                    "catheter_name": "DICOM Header",
+                    "catheter_mm": 2.0,
+                    "avg_diam_px": 2.0 / dicom_mm_pp
+                }
+                st.rerun()
+
+def render_artery_segmentation_widget(active_pid, p_name, p_dfp, p_meta, tag="P1"):
+    dfp = p_dfp
+    d_meta = p_meta
+    n_frames = d_meta["total_frames"]
+    frame_key = f"caa_frame_{active_pid}_{os.path.basename(dfp)}"
+    frame_slider = st.session_state.get(frame_key, 0)
+    
+    calib_key = f"caa_calib_{active_pid}_{os.path.basename(dfp)}"
+    calib_info = st.session_state.get(calib_key)
+    dicom_mm_pp = d_meta["spacing"] * (d_meta["pixels"].shape[-1] / 512.0)
+    active_mm_pp = calib_info["mm_per_pixel"] if calib_info else dicom_mm_pp
+    
+    frame_pixels = d_meta["pixels"][frame_slider]
+    norm_512 = get_norm_512(frame_pixels)
+    norm_rgb = cv2.cvtColor(norm_512, cv2.COLOR_GRAY2RGB)
+    
+    case_key = f"{active_pid}_{os.path.basename(dfp)}_{frame_slider}"
+    mask_key = f"caa_mask_{case_key}"
+    prof_key = f"caa_prof_{case_key}"
+    lm_key = f"caa_lm_{case_key}"
+    
+    active_mask = st.session_state.get(mask_key)
+    active_profile = st.session_state.get(prof_key)
+    active_landmarks = st.session_state.get(lm_key)
+    
+    col_vis, col_params = st.columns([1.3, 1])
+    with col_vis:
+        st.markdown(f"##### 🎯 Obrys tętniaka dla {tag} ({d_meta['series_desc']}, Klatka {frame_slider+1})")
+        st.caption(f"Skala: **{active_mm_pp:.4f} mm/px** | Kąty: **{d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°**")
+        
+        annot_bg = norm_rgb.copy()
+        if active_mask is not None and np.sum(active_mask) > 0:
+            v_mask = (active_mask > 0).astype(np.uint8) * 255
+            contour_preview = angioPyFunctions.maskOutliner(labelledArtery=v_mask, outlineThickness=1)
+            annot_bg[contour_preview, :] = [0, 255, 0]
+            
+        canvas_key = f"seg_cv_{tag}_{case_key}_{st.session_state.get('caa_cv_sfx', 0)}"
+        annotation_canvas = st_canvas(
+            fill_color="#ff0000",
+            stroke_width=0,
+            stroke_color="#ff0000",
+            background_color="black",
+            background_image=Image.fromarray(annot_bg),
+            update_streamlit=True,
+            height=512,
+            width=512,
+            drawing_mode="point",
+            point_display_radius=2,
+            key=canvas_key
+        )
+        
+        c_seg1, c_seg2 = st.columns(2)
+        with c_seg1:
+            if st.button(f"🚀 Segmentuj tętniak {tag} (AI)", type="primary", key=f"btn_seg_{tag}_{case_key}", use_container_width=True):
+                if annotation_canvas.json_data is not None and "objects" in annotation_canvas.json_data:
+                    objs = annotation_canvas.json_data["objects"]
+                    if len(objs) >= 2:
+                        with st.spinner(f"Segmentacja naczynia silnikiem angioPy dla {tag}..."):
+                            try:
+                                pts = []
+                                for o in objs:
+                                    r = float(o.get('radius', 2))
+                                    cy = float(o.get('top', 0)) + r
+                                    cx = float(o.get('left', 0)) + r
+                                    pts.append([cy, cx])
+                                pts = np.array(pts, dtype=np.float32)
+                                
+                                mask = angioPyFunctions.arterySegmentation(norm_512, pts)
+                                mask_bin = (mask > 0).astype(np.uint8)
+                                prof = extract_aneurysm_profile(mask_bin, active_mm_pp)
+                                if prof is not None:
+                                    st.session_state[mask_key] = mask_bin
+                                    st.session_state[prof_key] = prof
+                                    st.session_state[lm_key] = {
+                                        "prox": prof["prox_idx"],
+                                        "dist": prof["dist_idx"],
+                                        "max": prof["max_idx"]
+                                    }
+                                    st.success(f"✅ Sukces: Tętniak w {tag} został obrysowany!")
+                                    st.rerun()
+                                else:
+                                    st.error("Nie udało się wyznaczyć osi naczynia. Upewnij się, że punkty leżą wzdłuż światła tętnicy.")
+                            except Exception as e:
+                                st.error(f"Błąd podczas segmentacji: {e}")
+                    else:
+                        st.warning("Kliknij co najmniej 2 punkty na naczyniu przed uruchomieniem.")
+                else:
+                    st.warning("Wskaż punkty na naczyniu na obrazie obok.")
+        with c_seg2:
+            if st.button(f"🗑️ Wyczyść punkty {tag}", key=f"btn_clr_{tag}_{case_key}", use_container_width=True):
+                st.session_state["caa_cv_sfx"] = st.session_state.get("caa_cv_sfx", 0) + 1
+                st.rerun()
+
+    with col_params:
+        st.markdown(f"##### Pomiary {tag}")
+        if active_profile is not None:
+            p_idx = active_landmarks["prox"] if active_landmarks else active_profile["prox_idx"]
+            d_idx = active_landmarks["dist"] if active_landmarks else active_profile["dist_idx"]
+            m_idx = active_landmarks["max"] if active_landmarks else active_profile["max_idx"]
+            
+            p_idx = int(np.clip(p_idx, 0, len(active_profile["thickness_mm"]) - 1))
+            d_idx = int(np.clip(d_idx, 0, len(active_profile["thickness_mm"]) - 1))
+            m_idx = int(np.clip(m_idx, 0, len(active_profile["thickness_mm"]) - 1))
+            
+            calc_ref_prox = round(float(active_profile["thickness_mm"][p_idx]), 2)
+            calc_ref_dist = round(float(active_profile["thickness_mm"][d_idx]), 2)
+            calc_max_diam = round(float(active_profile["thickness_mm"][m_idx]), 2)
+            calc_ref_mean = round((calc_ref_prox + calc_ref_dist) / 2.0, 2)
+            calc_len = round(float(abs(active_profile["cum_dist_mm"][d_idx] - active_profile["cum_dist_mm"][p_idx])), 2)
+            if calc_len < 1.0: calc_len = 5.0
+            exp_ratio = round(calc_max_diam / calc_ref_mean, 2) if calc_ref_mean > 0 else 1.0
+            
+            st.metric(f"Dmax ({tag}):", f"{calc_max_diam} mm")
+            st.metric(f"Ref ({tag}):", f"{calc_ref_mean} mm")
+            st.metric(f"Wskaźnik poszerzenia ({tag}):", f"{exp_ratio}x")
+            
+            # Kaliper overlay preview
+            default_dims = {"ref_prox": calc_ref_prox, "ref_dist": calc_ref_dist, "max_diam": calc_max_diam, "mm_pp": active_mm_pp}
+            overlay_img = render_aneurysm_overlay(norm_512, active_mask, active_profile, active_landmarks, default_dims=default_dims)
+            safe_display_image(overlay_img, caption=f"Obrys i kalipery {tag}")
+            
+            with st.expander(f"📍 Korekta znaczników {tag}", expanded=False):
+                N_pts = len(active_profile["sp_x"])
+                prox_override = st.slider("Ref Proksymalna", 0, N_pts - 1, int(p_idx), key=f"sl_p_p_{tag}_{case_key}")
+                dist_override = st.slider("Ref Dystalna", 0, N_pts - 1, int(d_idx), key=f"sl_d_p_{tag}_{case_key}")
+                max_override = st.slider("Max Dilation (Dmax)", 0, N_pts - 1, int(m_idx), key=f"sl_m_p_{tag}_{case_key}")
+                if st.button(f"✅ Zastosuj pozycje {tag}", key=f"btn_apply_lm_p_{tag}_{case_key}", use_container_width=True):
+                    st.session_state[lm_key] = {"prox": prox_override, "dist": dist_override, "max": max_override}
+                    st.rerun()
+        else:
+            st.info(f"Wskaż 2 do 4 czerwonych punktów wzdłuż światła naczynia i kliknij 'Segmentuj tętniak {tag} (AI)'.")
+
+def render_biplane_results_content(active_pid, pair, series_map):
     p1_name, p1_dfp, p1_meta = pair["p1_name"], pair["p1_dfp"], pair["p1_meta"]
     p2_name, p2_dfp, p2_meta = pair["p2_name"], pair["p2_dfp"], pair["p2_meta"]
-    angle_diff = pair["angle_diff"]
+    angle_diff = pair.get("angle_diff", 0.0)
     
     p1_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(p1_dfp)}", 0)
     p2_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(p2_dfp)}", 0)
@@ -1385,34 +1679,22 @@ def render_biplane_simpson_view(active_pid, series_map):
     mask2 = st.session_state.get(f"caa_mask_{p2_case_key}")
     lm2 = st.session_state.get(f"caa_lm_{p2_case_key}")
     
-    # Check if both are delineated
     is_ready = (prof1 is not None and prof2 is not None and mask1 is not None and mask2 is not None)
-    
     if not is_ready:
         st.warning(f"⚠️ Do wyliczenia objętości metodą Simpsona 3D wymagane jest obrysowanie **obu** projekcji z pary!")
         c_alt1, c_alt2 = st.columns(2)
         with c_alt1:
             if prof1 is None:
                 st.error(f"❌ Projekcja 1 ({p1_meta['series_desc']}) nie została jeszcze obrysowana.")
-                if st.button(f"🎯 Obrysuj Projekcję 1", key="btn_go_p1_from_simp", type="primary", use_container_width=True):
-                    st.session_state["caa_active_series_name"] = p1_name
-                    st.session_state["caa_target_view"] = "single_delineation"
-                    st.rerun()
             else:
                 st.success(f"✅ Projekcja 1 ({p1_meta['series_desc']}) jest obrysowana.")
-                
         with c_alt2:
             if prof2 is None:
                 st.error(f"❌ Projekcja 2 ({p2_meta['series_desc']}) nie została jeszcze obrysowana.")
-                if st.button(f"🎯 Obrysuj Projekcję 2", key="btn_go_p2_from_simp", type="primary", use_container_width=True):
-                    st.session_state["caa_active_series_name"] = p2_name
-                    st.session_state["caa_target_view"] = "single_delineation"
-                    st.rerun()
             else:
                 st.success(f"✅ Projekcja 2 ({p2_meta['series_desc']}) jest obrysowana.")
-        return
+        return False
 
-    # Calculate true biplane 3D volumetry from the two outlined profiles!
     simp = compute_biplane_simpsons_volumetry(
         thick1=prof1["thickness_mm"],
         cum_dist1=prof1["cum_dist_mm"],
@@ -1426,12 +1708,10 @@ def render_biplane_simpson_view(active_pid, series_map):
         max2=lm2.get("max", prof2["max_idx"]) if lm2 else prof2["max_idx"],
         n_slices=30
     )
-    
     if simp is None:
         st.error("Wystąpił błąd podczas integracji numerycznej profili.")
-        return
-        
-    # Side-by-side presentation of both outlines
+        return False
+
     st.markdown("#### 🔬 Porównanie biplanarne obu obrysowanych projekcji (Side-by-Side):")
     col_ov1, col_ov2 = st.columns(2)
     
@@ -1454,8 +1734,6 @@ def render_biplane_simpson_view(active_pid, series_map):
         st.markdown(f"📏 Dmax: **{simp['d2_max']:.1f} mm** | Ref: **{simp['ref2_mean']:.1f} mm** | Ratio: **{simp['dilation_ratio_2']}x** | L2: **{simp['L2']:.1f} mm**")
         
     st.markdown("---")
-    
-    # 3D Simpson results banner
     st.markdown(f"""
     <div style='background-color: #042f2e; border: 1px solid #0f766e; border-left: 6px solid #14b8a6; padding: 16px 20px; border-radius: 8px; margin-bottom: 16px;'>
         <div style='font-size: 15px; font-weight: 700; color: #2dd4bf;'>
@@ -1483,31 +1761,28 @@ def render_biplane_simpson_view(active_pid, series_map):
         st.metric("Morfologia:", simp["morphology"])
         
     st.markdown("---")
-    
-    # Clinical Documentation & Persistence Form
     st.markdown("#### 📝 Dokumentacja kliniczna i zapis do bazy:")
     c_doc1, c_doc2 = st.columns(2)
     with c_doc1:
-        vessel = st.selectbox("Coronary Vessel:", ["LM (Left Main)", "LAD", "LCx", "RCA"], index=1 if "LAD" in pair["aha_label"] else (2 if "LCx" in pair["aha_label"] else 3), key="caa_save_vessel")
-        aha_segment = st.text_input("Segment AHA:", value=pair["aha_label"], key="caa_save_aha")
+        vessel = st.selectbox("Coronary Vessel:", ["LM (Left Main)", "LAD", "LCx", "RCA"], index=1 if "LAD" in pair["aha_label"] else (2 if "LCx" in pair["aha_label"] else 3), key=f"caa_save_vessel_{pair['aha_code']}")
+        aha_segment = st.text_input("Segment AHA:", value=pair["aha_label"], key=f"caa_save_aha_{pair['aha_code']}")
     with c_doc2:
-        thrombus = st.selectbox("Obecność skrzepliny (Thrombus):", ["Brak (None)", "Obecna (Present)", "Podejrzenie (Suspected)"], key="caa_save_thrombus")
-        calcification = st.selectbox("Zwapnienia ściany (Calcification):", ["Brak (None)", "Łagodne (Mild)", "Masywne (Severe)"], key="caa_save_calc")
+        thrombus = st.selectbox("Obecność skrzepliny (Thrombus):", ["Brak (None)", "Obecna (Present)", "Podejrzenie (Suspected)"], key=f"caa_save_thrombus_{pair['aha_code']}")
+        calcification = st.selectbox("Zwapnienia ściany (Calcification):", ["Brak (None)", "Łagodne (Mild)", "Masywne (Severe)"], key=f"caa_save_calc_{pair['aha_code']}")
 
-    has_stenosis = st.checkbox("Współistniejące zwężenie w obrębie tętniaka", key="caa_save_stenosis")
+    has_stenosis = st.checkbox("Współistniejące zwężenie w obrębie tętniaka", key=f"caa_save_stenosis_{pair['aha_code']}")
     mld_val = None
     pct_stenosis = 0.0
     if has_stenosis:
         c_st1, c_st2 = st.columns(2)
         with c_st1:
             ref_avg = (simp['ref1_mean'] + simp['ref2_mean']) / 2.0
-            mld_val = st.number_input("Minimal Lumen Diameter (MLD) [mm]:", min_value=0.2, max_value=float(ref_avg), value=min(1.5, float(ref_avg)), step=0.1)
+            mld_val = st.number_input("Minimal Lumen Diameter (MLD) [mm]:", min_value=0.2, max_value=float(ref_avg), value=min(1.5, float(ref_avg)), step=0.1, key=f"caa_mld_{pair['aha_code']}")
         with c_st2:
             pct_stenosis = round((1.0 - (mld_val / ref_avg)) * 100.0, 1)
             st.metric("% Stenosis:", f"{pct_stenosis}%")
 
-    if st.button("💾 Zapisz pełne badanie biplanarne tętniaka do bazy danych", type="primary", use_container_width=True, key="btn_save_biplane_record"):
-        # Combine overlays into side-by-side thumbnail
+    if st.button("💾 Zapisz pełne badanie biplanarne tętniaka do bazy danych", type="primary", use_container_width=True, key=f"btn_save_biplane_{pair['aha_code']}"):
         img_b64 = None
         try:
             h1, w1 = ov1.shape[:2]
@@ -1518,7 +1793,6 @@ def render_biplane_simpson_view(active_pid, series_map):
             ov1_sc = cv2.resize(ov1, (w1_sc, target_h))
             ov2_sc = cv2.resize(ov2, (w2_sc, target_h))
             combined_ov = np.hstack([ov1_sc, ov2_sc])
-            
             pil_thumb = Image.fromarray(combined_ov)
             buf = io.BytesIO()
             pil_thumb.save(buf, format="JPEG", quality=80)
@@ -1557,7 +1831,6 @@ def render_biplane_simpson_view(active_pid, series_map):
             "annotator": st.session_state.user.get("email", "syl.iwanczyk@gmail.com") if "user" in st.session_state else "syl.iwanczyk@gmail.com",
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
         }
-        
         try:
             from firebase_admin import firestore
             db = firestore.client()
@@ -1566,6 +1839,206 @@ def render_biplane_simpson_view(active_pid, series_map):
             st.success(f"✅ Zapisano pomyślnie badanie tętniaka dla pacjenta **{active_pid}** ({aha_segment}) w kolekcji 'aneurysm_results'!")
         except Exception as e:
             st.error(f"Błąd zapisu do bazy danych: {e}")
+            
+    return True
+
+# ── 3. WIDOK: OBRYSOWANIE W PARZE (PAIRED DELINEATION WORKFLOW) ──────────────
+def render_paired_delineation_view(active_pid, series_map):
+    meta_store_key = f"caa_series_meta_{active_pid}"
+    series_meta = st.session_state.get(meta_store_key, {})
+    detected_pairs = find_biplane_pairs(series_map, series_meta)
+    
+    pair = st.session_state.get("caa_active_pair")
+    if not pair and detected_pairs:
+        pair = detected_pairs[0]
+        st.session_state["caa_active_pair"] = pair
+        
+    if not pair:
+        st.warning("⚠️ Brak wybranej pary biplanarnej. Oznacz co najmniej dwie projekcje tym samym segmentem AHA w galerii.")
+        if st.button("👉 Przejdź do galerii", type="primary"):
+            st.session_state["caa_target_view"] = "gallery"
+            st.rerun()
+        return
+
+    p1_name, p1_dfp, p1_meta = pair["p1_name"], pair["p1_dfp"], pair["p1_meta"]
+    p2_name, p2_dfp, p2_meta = pair["p2_name"], pair["p2_dfp"], pair["p2_meta"]
+    angle_diff = pair.get("angle_diff", 0.0)
+
+    # Top header
+    c_h1, c_h2 = st.columns([3, 1])
+    with c_h1:
+        st.markdown(f"### 👥 Obrysowanie w parze: **{pair['aha_label']}**")
+        st.caption(f"📹 **Projekcja 1:** {p1_meta['series_desc']} ({p1_meta['primary_angle']:+.1f}° / {p1_meta['secondary_angle']:+.1f}°)  |  🌐 **Projekcja 2:** {p2_meta['series_desc']} ({p2_meta['primary_angle']:+.1f}° / {p2_meta['secondary_angle']:+.1f}°)  |  📐 **Kąt 3D:** {angle_diff:.1f}°")
+    with c_h2:
+        if st.button("🔙 Wróć do galerii", use_container_width=True):
+            st.session_state["caa_target_view"] = "gallery"
+            st.rerun()
+
+    # Step progress selector
+    substep_key = f"caa_pair_substep_{active_pid}"
+    if "caa_pair_target_substep" in st.session_state:
+        st.session_state[substep_key] = st.session_state.pop("caa_pair_target_substep")
+    if substep_key not in st.session_state:
+        st.session_state[substep_key] = "1️⃣ Kalibracja cewnika (P1 i P2)"
+        
+    current_step = st.radio(
+        "Kroki procedury w parze:",
+        [
+            "1️⃣ Kalibracja cewnika (P1 i P2)",
+            "2️⃣ Segmentacja naczynia AI (P1 i P2)",
+            "3️⃣ Obliczenie 3D Simpsona i Wyniki"
+        ],
+        horizontal=True,
+        key=substep_key
+    )
+    st.markdown("---")
+
+    # Frame and calibration states
+    p1_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(p1_dfp)}", 0)
+    p2_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(p2_dfp)}", 0)
+    
+    calib1 = st.session_state.get(f"caa_calib_{active_pid}_{os.path.basename(p1_dfp)}")
+    calib2 = st.session_state.get(f"caa_calib_{active_pid}_{os.path.basename(p2_dfp)}")
+    
+    mask1 = st.session_state.get(f"caa_mask_{active_pid}_{os.path.basename(p1_dfp)}_{p1_fr}")
+    mask2 = st.session_state.get(f"caa_mask_{active_pid}_{os.path.basename(p2_dfp)}_{p2_fr}")
+
+    # ── KROK 1: KALIBRACJA CEWNIKA ──
+    if current_step == "1️⃣ Kalibracja cewnika (P1 i P2)":
+        c_st1, c_st2 = st.columns(2)
+        with c_st1:
+            if calib1:
+                st.success(f"✅ Projekcja 1 ({p1_meta['series_desc']}): Skalibrowana **{calib1['mm_per_pixel']:.4f} mm/px**")
+            else:
+                st.info(f"⚪ Projekcja 1 ({p1_meta['series_desc']}): Oczekuje na kalibrację")
+        with c_st2:
+            if calib2:
+                st.success(f"✅ Projekcja 2 ({p2_meta['series_desc']}): Skalibrowana **{calib2['mm_per_pixel']:.4f} mm/px**")
+            else:
+                st.info(f"⚪ Projekcja 2 ({p2_meta['series_desc']}): Oczekuje na kalibrację")
+
+        cal_sel = st.radio(
+            "Wybierz projekcję do kalibracji:",
+            [f"📹 Projekcja 1 ({p1_meta['series_desc']})", f"🌐 Projekcja 2 ({p2_meta['series_desc']})"],
+            horizontal=True,
+            key=f"caa_pair_cal_sel_{active_pid}"
+        )
+        
+        if "Projekcja 1" in cal_sel:
+            render_catheter_calibration_widget(active_pid, p1_name, p1_dfp, p1_meta, tag="P1")
+            if calib1 and not calib2:
+                if st.button("➡️ Przejdź do kalibracji Projekcji 2", type="primary", use_container_width=True):
+                    st.session_state[f"caa_pair_cal_sel_{active_pid}"] = f"🌐 Projekcja 2 ({p2_meta['series_desc']})"
+                    st.rerun()
+        else:
+            render_catheter_calibration_widget(active_pid, p2_name, p2_dfp, p2_meta, tag="P2")
+            if calib2 and not calib1:
+                if st.button("⬅️ Przejdź do kalibracji Projekcji 1", type="primary", use_container_width=True):
+                    st.session_state[f"caa_pair_cal_sel_{active_pid}"] = f"📹 Projekcja 1 ({p1_meta['series_desc']})"
+                    st.rerun()
+
+        st.markdown("---")
+        if calib1 and calib2:
+            st.success("✅ Obie projekcje zostały pomyślnie skalibrowane cewnikiem!")
+            if st.button("➡️ Przejdź do Kroku 2: Segmentacja obu projekcji (AI)", type="primary", use_container_width=True):
+                st.session_state["caa_pair_target_substep"] = "2️⃣ Segmentacja naczynia AI (P1 i P2)"
+                st.rerun()
+        else:
+            if st.button("⚡ Użyj skali DICOM dla nieskalibrowanych i przejdź do Kroku 2", use_container_width=True):
+                st.session_state["caa_pair_target_substep"] = "2️⃣ Segmentacja naczynia AI (P1 i P2)"
+                st.rerun()
+
+    # ── KROK 2: SEGMENTACJA NACZYNIA AI ──
+    elif current_step == "2️⃣ Segmentacja naczynia AI (P1 i P2)":
+        c_st1, c_st2 = st.columns(2)
+        with c_st1:
+            if mask1 is not None:
+                prof1 = st.session_state.get(f"caa_prof_{active_pid}_{os.path.basename(p1_dfp)}_{p1_fr}")
+                dmax_t = f"{prof1['max_diam_mm']:.1f} mm" if prof1 else ""
+                st.success(f"🟢 Projekcja 1: Obrysowana (Dmax={dmax_t}, Klatka {p1_fr+1})")
+            else:
+                st.info(f"⚪ Projekcja 1: Oczekuje na obrysowanie (Klatka {p1_fr+1})")
+        with c_st2:
+            if mask2 is not None:
+                prof2 = st.session_state.get(f"caa_prof_{active_pid}_{os.path.basename(p2_dfp)}_{p2_fr}")
+                dmax_t = f"{prof2['max_diam_mm']:.1f} mm" if prof2 else ""
+                st.success(f"🟢 Projekcja 2: Obrysowana (Dmax={dmax_t}, Klatka {p2_fr+1})")
+            else:
+                st.info(f"⚪ Projekcja 2: Oczekuje na obrysowanie (Klatka {p2_fr+1})")
+
+        seg_sel = st.radio(
+            "Wybierz projekcję do obrysowania:",
+            [f"📹 Projekcja 1 ({p1_meta['series_desc']})", f"🌐 Projekcja 2 ({p2_meta['series_desc']})"],
+            horizontal=True,
+            key=f"caa_pair_seg_sel_{active_pid}"
+        )
+        
+        if "Projekcja 1" in seg_sel:
+            render_artery_segmentation_widget(active_pid, p1_name, p1_dfp, p1_meta, tag="P1")
+            if mask1 is not None and mask2 is None:
+                if st.button("➡️ Przejdź do obrysowania Projekcji 2", type="primary", use_container_width=True):
+                    st.session_state[f"caa_pair_seg_sel_{active_pid}"] = f"🌐 Projekcja 2 ({p2_meta['series_desc']})"
+                    st.rerun()
+        else:
+            render_artery_segmentation_widget(active_pid, p2_name, p2_dfp, p2_meta, tag="P2")
+            if mask2 is not None and mask1 is None:
+                if st.button("⬅️ Przejdź do obrysowania Projekcji 1", type="primary", use_container_width=True):
+                    st.session_state[f"caa_pair_seg_sel_{active_pid}"] = f"📹 Projekcja 1 ({p1_meta['series_desc']})"
+                    st.rerun()
+
+        st.markdown("---")
+        if mask1 is not None and mask2 is not None:
+            st.success("🎉 Obie projekcje zostały pomyślnie obrysowane!")
+            if st.button("🚀 Przejdź do Kroku 3: Obliczenie objętości Simpsona 3D i ekscentryczności", type="primary", use_container_width=True):
+                st.session_state["caa_pair_target_substep"] = "3️⃣ Obliczenie 3D Simpsona i Wyniki"
+                st.rerun()
+
+    # ── KROK 3: OBLICZENIE ──
+    elif current_step == "3️⃣ Obliczenie 3D Simpsona i Wyniki":
+        res = render_biplane_results_content(active_pid, pair, series_map)
+        if not res:
+            if st.button("⬅️ Wróć do Kroku 2: Segmentacja obu projekcji", type="primary", use_container_width=True):
+                st.session_state["caa_pair_target_substep"] = "2️⃣ Segmentacja naczynia AI (P1 i P2)"
+                st.rerun()
+        else:
+            st.markdown("---")
+            if st.button("📋 Zakończ analizę i wróć do galerii", use_container_width=True):
+                st.session_state["caa_target_view"] = "gallery"
+                st.rerun()
+
+# ── 4. WIDOK: SIMPSON 3D (WYNIKI BIPLANE Z OBU OBRYSÓW) ───────────────────────
+def render_biplane_simpson_view(active_pid, series_map):
+    pair = st.session_state.get("caa_active_biplane_pair", None)
+    meta_store = st.session_state.get(f"caa_series_meta_{active_pid}", {})
+    detected_pairs = find_biplane_pairs(series_map, meta_store)
+    
+    c_top1, c_top2 = st.columns([3, 1])
+    with c_top1:
+        st.markdown(f"### 🌐 Wyniki Simpsona 3D i Ekscentryczność z obu obrysów")
+    with c_top2:
+        if st.button("🔙 Wróć do galerii", use_container_width=True):
+            st.session_state["caa_target_view"] = "gallery"
+            st.rerun()
+            
+    if detected_pairs:
+        pair_labels = [f"Segment: {p['aha_label']} | {p['p1_meta']['series_desc']} & {p['p2_meta']['series_desc']} (Kąt 3D: {p['angle_diff']:.1f}°)" for p in detected_pairs]
+        cur_p_idx = 0
+        if pair:
+            for i, p in enumerate(detected_pairs):
+                if p["p1_name"] == pair["p1_name"] and p["p2_name"] == pair["p2_name"]:
+                    cur_p_idx = i
+                    break
+        chosen_pair_idx = st.selectbox("Wybierz parę biplanarną do obliczeń:", range(len(detected_pairs)), format_func=lambda i: pair_labels[i], index=cur_p_idx)
+        pair = detected_pairs[chosen_pair_idx]
+        st.session_state["caa_active_biplane_pair"] = pair
+    elif pair is None:
+        st.warning("Brak wybranej pary biplanarnej. Wróć do galerii i oznacz dwie projekcje tym samym segmentem AHA.")
+        if st.button("👉 Przejdź do galerii", type="primary"):
+            st.session_state["caa_target_view"] = "gallery"
+            st.rerun()
+        return
+
+    render_biplane_results_content(active_pid, pair, series_map)
 
 # ── 4. GŁÓWNY PUNKT WEJŚCIA MODUŁU TĘTNIAKÓW ─────────────────────────────────
 def render_coronary_aneurysm_workspace():
@@ -1659,16 +2132,28 @@ def render_coronary_aneurysm_workspace():
     # Persistent Top Navigation Bar
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🧭 Widok roboczy:")
+    nav_options = ["🗂️ Przegląd projekcji (Gallery)", "👥 Obrysowanie w parze (Biplane)", "🎯 Delineacja pojedyncza", "🌐 Simpson 3D (Biplane)"]
+    current_idx = 0
+    if st.session_state[view_key] == "paired_delineation":
+        current_idx = 1
+    elif st.session_state[view_key] == "single_delineation":
+        current_idx = 2
+    elif st.session_state[view_key] == "biplane_simpson":
+        current_idx = 3
+
     view_choice = st.sidebar.radio(
         "Wybierz widok:",
-        ["🗂️ Przegląd projekcji (Gallery)", "🎯 Delineacja projekcji", "🌐 Simpson 3D (Biplane)"],
-        index=0 if st.session_state[view_key]=="gallery" else (1 if st.session_state[view_key]=="single_delineation" else 2),
+        nav_options,
+        index=current_idx,
         key=f"rad_view_{active_pid}"
     )
     if view_choice == "🗂️ Przegląd projekcji (Gallery)" and st.session_state[view_key] != "gallery":
         st.session_state[view_key] = "gallery"
         st.rerun()
-    elif view_choice == "🎯 Delineacja projekcji" and st.session_state[view_key] != "single_delineation":
+    elif view_choice == "👥 Obrysowanie w parze (Biplane)" and st.session_state[view_key] != "paired_delineation":
+        st.session_state[view_key] = "paired_delineation"
+        st.rerun()
+    elif view_choice == "🎯 Delineacja pojedyncza" and st.session_state[view_key] != "single_delineation":
         st.session_state[view_key] = "single_delineation"
         st.rerun()
     elif view_choice == "🌐 Simpson 3D (Biplane)" and st.session_state[view_key] != "biplane_simpson":
@@ -1678,6 +2163,8 @@ def render_coronary_aneurysm_workspace():
     # Route to active view
     if st.session_state[view_key] == "gallery":
         render_projections_gallery(active_pid, series_map)
+    elif st.session_state[view_key] == "paired_delineation":
+        render_paired_delineation_view(active_pid, series_map)
     elif st.session_state[view_key] == "single_delineation":
         render_single_delineation_view(active_pid, series_map)
     elif st.session_state[view_key] == "biplane_simpson":
