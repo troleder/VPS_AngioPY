@@ -932,6 +932,70 @@ def generate_aneurysm_pdf_report(active_pid, pair, p1_meta, p2_meta, angle_diff,
         print(f"Error in generate_aneurysm_pdf_report: {e}")
         return b""
 
+def generate_aneurysm_csv_summary(active_pid, pair, simp, vessel="LAD", aha_segment="Seg", thrombus="Brak (None)", calcification="Brak (None)"):
+    """
+    Generates a CSV file (UTF-8 with BOM for Microsoft Excel) containing:
+    1. Study metadata & vessel info
+    2. Quantitative biplane volumetry summary
+    3. Slice-by-slice Simpson's profiles (position, diameters, area, zone)
+    """
+    import io
+    import csv
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=';')
+
+    writer.writerow(["RAPORT POMIARÓW TĘTNIAKA WIEŃCOWEGO (AngioPY)"])
+    writer.writerow(["ID Pacjenta", active_pid])
+    writer.writerow(["Segment AHA", pair.get("aha_label", aha_segment)])
+    writer.writerow(["Naczynie wieńcowe", vessel])
+    writer.writerow(["Skrzeplina przyścienna", thrombus])
+    writer.writerow(["Zwapnienia ściany", calcification])
+    writer.writerow([])
+
+    writer.writerow(["PARAMETR", "WARTOŚĆ", "JEDNOSTKA"])
+    writer.writerow(["Objętość całkowita segmentu (V_total)", f"{simp.get('V_total_mm3', 0.0):.2f}", "mm3"])
+    writer.writerow(["Objętość referencyjna (V_ref)", f"{simp.get('V_ref_mm3', 0.0):.2f}", "mm3"])
+    writer.writerow(["Objętość tętniaka (nadmiar V_excess >=1.2x Ref)", f"{simp.get('V_excess_mm3', 0.0):.2f}", "mm3"])
+    writer.writerow(["Długość tętniaka (L_aneurysm >=1.2x Ref)", f"{simp.get('aneurysm_len_mm', 0.0):.2f}", "mm"])
+    writer.writerow(["Całkowita długość segmentu (L_total)", f"{simp.get('length_total_mm', 0.0):.2f}", "mm"])
+    writer.writerow(["Średnica referencyjna proksymalna", f"{simp.get('ref1_mean', 0.0):.2f}", "mm"])
+    writer.writerow(["Średnica referencyjna dystalna", f"{simp.get('ref2_mean', 0.0):.2f}", "mm"])
+    ref_mid = (simp.get('ref1_mean', 3.0) + simp.get('ref2_mean', 3.0)) / 2.0
+    writer.writerow(["Średnica referencyjna uśredniona", f"{ref_mid:.2f}", "mm"])
+    writer.writerow(["Maksymalna średnica Projekcja 1 (D1_max)", f"{simp.get('D1_max', 0.0):.2f}", "mm"])
+    writer.writerow(["Maksymalna średnica Projekcja 2 (D2_max)", f"{simp.get('D2_max', 0.0):.2f}", "mm"])
+    d_max_geom = float(np.sqrt(simp.get('D1_max', 0.0) * simp.get('D2_max', 0.0)))
+    writer.writerow(["Maksymalna średnica zastępcza (D_max)", f"{d_max_geom:.2f}", "mm"])
+    writer.writerow(["Wskaźnik ektazji (D_max / Ref)", f"{(d_max_geom / max(0.1, ref_mid)):.2f}", "x Ref"])
+    writer.writerow([])
+
+    writer.writerow(["PROFIL PLASTER-PO-PLASTRA (Metoda biplanarna Simpsonsa)"])
+    writer.writerow(["Plaster (s) [mm]", "D1 [mm]", "D2 [mm]", "D zastępcza [mm]", "Ref [mm]", "Powierzchnia [mm2]", "Wskaźnik (D/Ref)", "Strefa kliniczna"])
+
+    s_slices = simp.get("s_slices", [])
+    D1_slices = simp.get("D1_slices", [])
+    D2_slices = simp.get("D2_slices", [])
+    D_ref_interp = simp.get("D_ref_interp", [])
+    areas = simp.get("areas_slices", [])
+
+    for i in range(len(s_slices)):
+        s_val = float(s_slices[i])
+        d1 = float(D1_slices[i]) if i < len(D1_slices) else 0.0
+        d2 = float(D2_slices[i]) if i < len(D2_slices) else 0.0
+        d_eff = float(np.sqrt(d1 * d2))
+        d_ref = float(D_ref_interp[i]) if i < len(D_ref_interp) else ref_mid
+        ar = float(areas[i]) if i < len(areas) else float(np.pi * (d1 / 2.0) * (d2 / 2.0))
+        ratio = d_eff / max(0.1, d_ref)
+        if ratio >= 1.4:
+            strefa = "Worek tętniaka (>=1.4x Ref)"
+        elif ratio >= 1.2:
+            strefa = "Szyja / Poszerzenie (1.2-1.4x Ref)"
+        else:
+            strefa = "Zdrowe naczynie (<1.2x Ref)"
+        writer.writerow([f"{s_val:.2f}", f"{d1:.2f}", f"{d2:.2f}", f"{d_eff:.2f}", f"{d_ref:.2f}", f"{ar:.2f}", f"{ratio:.2f}", strefa])
+
+    return output.getvalue().encode('utf-8-sig')
+
 def calibrate_catheter(frame_2d, pt1, pt2, catheter_mm):
     """
     Tracks edges of the catheter along the vector between pt1 and pt2
@@ -2679,7 +2743,7 @@ def render_biplane_results_content(active_pid, pair, series_map):
     if fig_3d is not None:
         st.plotly_chart(fig_3d, use_container_width=True)
 
-    c_pdf_act1, c_pdf_act2 = st.columns([1.5, 1.0])
+    c_pdf_act1, c_pdf_act2, c_pdf_act3 = st.columns([1.3, 1.0, 1.0])
     pdf_filename = f"Raport_CAA_3D_{active_pid}_{pair.get('aha_code', 'seg')}.pdf"
     with c_pdf_act1:
         pdf_bytes = generate_aneurysm_pdf_report(
@@ -2697,7 +2761,7 @@ def render_biplane_results_content(active_pid, pair, series_map):
             calcification="Brak (None)"
         )
         st.download_button(
-            label="📄 Pobierz pełny Raport PDF (Obrysy 2D + 3D + Pomiary)",
+            label="📄 Pobierz Raport PDF (A4)",
             data=pdf_bytes,
             file_name=pdf_filename,
             mime="application/pdf",
@@ -2715,7 +2779,24 @@ def render_biplane_results_content(active_pid, pair, series_map):
             mime="application/sla",
             use_container_width=True,
             key=f"btn_stl_top_{pair['aha_code']}",
-            help="Pobierz plik w formacie STL do druku 3D lub przeglądania w programach CAD / 3D Slicer"
+            help="Pobierz plik bryłowy STL do druku 3D lub przeglądania w programach CAD / 3D Slicer"
+        )
+    with c_pdf_act3:
+        csv_data = generate_aneurysm_csv_summary(
+            active_pid=active_pid,
+            pair=pair,
+            simp=simp,
+            vessel=pair.get("aha_label", "LAD"),
+            aha_segment=pair.get("aha_label", "Seg"),
+        )
+        st.download_button(
+            label="📊 Pobierz Dane (CSV)",
+            data=csv_data,
+            file_name=f"aneurysm_{active_pid}_{pair.get('aha_code', 'seg')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key=f"btn_csv_top_{pair['aha_code']}",
+            help="Pobierz surowe dane pomiarowe i profile plastrów w formacie CSV zgodnym z Microsoft Excel"
         )
 
     st.markdown("---")
