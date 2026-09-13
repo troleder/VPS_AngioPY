@@ -8,10 +8,12 @@ import zipfile
 import shutil
 import base64
 import hashlib
+import struct
 import numpy as np
 import pydicom
 from PIL import Image
 import streamlit as st
+import plotly.graph_objects as go
 import cv2
 import scipy.ndimage
 import scipy.interpolate
@@ -278,6 +280,9 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
 
         morphology = "Wrzecionowaty (Fusiform)" if (L / a >= 2.0) else "Workowaty (Saccular)"
 
+        s_slices = (u_eval * L).tolist()
+        max_idx_slice = int(np.argmax((D1 + D2) / 2.0))
+
         return {
             "total_vol": round(total_vol, 2),
             "excess_vol": round(excess_vol, 2),
@@ -293,11 +298,288 @@ def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, th
             "eccentricity": round(eccentricity, 2),
             "dilation_ratio_1": dil_ratio_1,
             "dilation_ratio_2": dil_ratio_2,
-            "morphology": morphology
+            "morphology": morphology,
+            "D1_slices": [round(float(v), 3) for v in D1],
+            "D2_slices": [round(float(v), 3) for v in D2],
+            "Dref1_slices": [round(float(v), 3) for v in Dref1],
+            "Dref2_slices": [round(float(v), 3) for v in Dref2],
+            "s_slices": [round(float(v), 3) for v in s_slices],
+            "max_idx_slice": max_idx_slice,
+            "n_slices": n_slices
         }
     except Exception as e:
         print(f"Error in compute_biplane_simpsons_volumetry: {e}")
         return None
+
+def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", show_ref=True, show_rings=True, n_phi=36):
+    """
+    Constructs an interactive 3D mesh reconstruction of the coronary artery aneurysm
+    derived from biplane Simpson cross-sectional slice profiles.
+    """
+    try:
+        D1 = np.array(simp["D1_slices"])
+        D2 = np.array(simp["D2_slices"])
+        Dref1 = np.array(simp["Dref1_slices"])
+        Dref2 = np.array(simp["Dref2_slices"])
+        s = np.array(simp["s_slices"])
+    except (KeyError, TypeError):
+        return None
+
+    n_s = len(s)
+    phi = np.linspace(0.0, 2.0 * np.pi, n_phi)
+    S, Phi = np.meshgrid(s, phi, indexing="ij")
+
+    # Semi-axes along the length
+    R1 = (D1 / 2.0)[:, None]
+    R2 = (D2 / 2.0)[:, None]
+
+    # Coordinates of aneurysm lumen surface
+    X = R1 * np.cos(Phi)
+    Y = R2 * np.sin(Phi)
+    Z = S
+
+    # Determine surface color values
+    mean_D = (D1 + D2) / 2.0
+    mean_Dref = (Dref1 + Dref2) / 2.0
+    if color_mode == "dilation":
+        C_1d = mean_D / np.maximum(0.1, mean_Dref)
+        color_title = "Rozstrzeń (x Ref)"
+        cmin, cmax = 1.0, max(2.5, float(np.max(C_1d)))
+        colorscale = "Turbo"
+    else:
+        C_1d = mean_D
+        color_title = "Średnica [mm]"
+        cmin, cmax = float(np.min(C_1d)), float(np.max(C_1d))
+        colorscale = "Turbo"
+
+    C = np.tile(C_1d[:, None], (1, n_phi))
+
+    # Custom hover text for vertices
+    hover_text = []
+    for i in range(n_s):
+        row_txt = []
+        for j in range(n_phi):
+            txt = (
+                f"<b>Oś podłużna Z:</b> {s[i]:.1f} mm<br>"
+                f"<b>Średnica D1 (P1):</b> {D1[i]:.2f} mm<br>"
+                f"<b>Średnica D2 (P2):</b> {D2[i]:.2f} mm<br>"
+                f"<b>Średnia średnica:</b> {mean_D[i]:.2f} mm<br>"
+                f"<b>Pole przekroju:</b> {(np.pi/4 * D1[i] * D2[i]):.1f} mm²<br>"
+                f"<b>Wskaźnik rozstrzeni:</b> {(mean_D[i] / max(0.1, mean_Dref[i])):.2f}x"
+            )
+            row_txt.append(txt)
+        hover_text.append(row_txt)
+
+    fig = go.Figure()
+
+    # 1. Main Aneurysm Lumen Surface
+    fig.add_trace(go.Surface(
+        x=X, y=Y, z=Z,
+        surfacecolor=C,
+        colorscale=colorscale,
+        cmin=cmin, cmax=cmax,
+        colorbar=dict(
+            title=dict(text=color_title, font=dict(color="#e2e8f0", size=12)),
+            tickfont=dict(color="#e2e8f0", size=10),
+            len=0.75,
+            x=1.02,
+            thickness=14
+        ),
+        lighting=dict(
+            ambient=0.65,
+            diffuse=0.8,
+            specular=0.6,
+            roughness=0.4,
+            fresnel=0.2
+        ),
+        lightposition=dict(x=100, y=200, z=150),
+        hoverinfo="text",
+        text=hover_text,
+        opacity=0.92,
+        name="Światło tętniaka"
+    ))
+
+    # 2. Optional: Ghost healthy reference lumen
+    if show_ref:
+        Rref1 = (Dref1 / 2.0)[:, None]
+        Rref2 = (Dref2 / 2.0)[:, None]
+        X_ref = Rref1 * np.cos(Phi)
+        Y_ref = Rref2 * np.sin(Phi)
+        Z_ref = S
+
+        fig.add_trace(go.Surface(
+            x=X_ref, y=Y_ref, z=Z_ref,
+            surfacecolor=np.ones_like(C),
+            colorscale=[[0, "rgba(56, 189, 248, 0.20)"], [1, "rgba(56, 189, 248, 0.20)"]],
+            showscale=False,
+            lighting=dict(ambient=0.8, diffuse=0.3),
+            hoverinfo="skip",
+            opacity=0.32,
+            name="Zdrowe naczynie (Ref)"
+        ))
+
+    # 3. Centerline trace
+    fig.add_trace(go.Scatter3d(
+        x=np.zeros_like(s),
+        y=np.zeros_like(s),
+        z=s,
+        mode="lines",
+        line=dict(color="#38bdf8", width=3, dash="dash"),
+        hoverinfo="skip",
+        name="Oś centralna"
+    ))
+
+    # 4. Optional: Landmark caliper rings (Prox, Dist, Dmax)
+    if show_rings:
+        def add_caliper_ring(idx, ring_color, label):
+            theta_r = np.linspace(0.0, 2.0 * np.pi, 60)
+            rx = (D1[idx] / 2.0) * np.cos(theta_r)
+            ry = (D2[idx] / 2.0) * np.sin(theta_r)
+            rz = np.full_like(theta_r, s[idx])
+            fig.add_trace(go.Scatter3d(
+                x=rx, y=ry, z=rz,
+                mode="lines",
+                line=dict(color=ring_color, width=5),
+                hoverinfo="text",
+                text=f"{label}: {mean_D[idx]:.1f} mm (Z={s[idx]:.1f} mm)",
+                name=label
+            ))
+
+        add_caliper_ring(0, "#22c55e", f"Ref Prox ({mean_D[0]:.1f} mm)")
+        add_caliper_ring(n_s - 1, "#22c55e", f"Ref Dist ({mean_D[-1]:.1f} mm)")
+        m_idx = simp.get("max_idx_slice", int(np.argmax(mean_D)))
+        add_caliper_ring(m_idx, "#ef4444", f"Dmax ({mean_D[m_idx]:.1f} mm)")
+
+    max_r = max(float(np.max(D1 / 2.0)), float(np.max(D2 / 2.0)), 3.0)
+    L_tot = float(s[-1]) if len(s) > 0 else 10.0
+
+    fig.update_layout(
+        title=dict(
+            text=f"<b>Rekonstrukcja 3D tętniaka: {pair.get('aha_label', 'Segment')}</b> | V = {simp['total_vol']:.1f} mm³ | Ekscentryczność: {simp['eccentricity']}",
+            font=dict(color="#38bdf8", size=14)
+        ),
+        paper_bgcolor="#090d16",
+        plot_bgcolor="#090d16",
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=580,
+        showlegend=True,
+        legend=dict(
+            font=dict(color="#94a3b8", size=11),
+            bgcolor="rgba(15, 23, 42, 0.7)",
+            bordercolor="#334155",
+            borderwidth=1,
+            x=0.02, y=0.98
+        ),
+        scene=dict(
+            xaxis=dict(
+                title="X: Proj 1 (mm)",
+                titlefont=dict(color="#94a3b8", size=11),
+                tickfont=dict(color="#64748b", size=9),
+                backgroundcolor="#0f172a",
+                gridcolor="#334155",
+                showbackground=True,
+                range=[-max_r * 1.5, max_r * 1.5]
+            ),
+            yaxis=dict(
+                title="Y: Proj 2 (mm)",
+                titlefont=dict(color="#94a3b8", size=11),
+                tickfont=dict(color="#64748b", size=9),
+                backgroundcolor="#0f172a",
+                gridcolor="#334155",
+                showbackground=True,
+                range=[-max_r * 1.5, max_r * 1.5]
+            ),
+            zaxis=dict(
+                title="Z: Oś naczynia (mm)",
+                titlefont=dict(color="#94a3b8", size=11),
+                tickfont=dict(color="#64748b", size=9),
+                backgroundcolor="#0b1120",
+                gridcolor="#334155",
+                showbackground=True,
+                range=[-1.0, L_tot + 1.0]
+            ),
+            aspectratio=dict(
+                x=1.0,
+                y=1.0,
+                z=max(1.2, float(L_tot / (2.0 * max_r)))
+            ),
+            camera=dict(
+                eye=dict(x=1.6, y=1.6, z=1.2),
+                up=dict(x=0, y=0, z=1)
+            )
+        )
+    )
+    return fig
+
+def export_aneurysm_to_stl(simp, n_phi=36, close_caps=True):
+    """
+    Generates a binary STL file bytes for the 3D reconstructed aneurysm lumen.
+    Can be directly downloaded and opened in 3D Slicer, MeshMixer, or 3D printed.
+    """
+    try:
+        D1 = np.array(simp["D1_slices"])
+        D2 = np.array(simp["D2_slices"])
+        s = np.array(simp["s_slices"])
+    except (KeyError, TypeError):
+        return b""
+
+    n_s = len(s)
+    phi = np.linspace(0.0, 2.0 * np.pi, n_phi, endpoint=False)
+
+    verts = np.zeros((n_s, n_phi, 3), dtype=np.float32)
+    for i in range(n_s):
+        r1 = float(D1[i] / 2.0)
+        r2 = float(D2[i] / 2.0)
+        z = float(s[i])
+        verts[i, :, 0] = r1 * np.cos(phi)
+        verts[i, :, 1] = r2 * np.sin(phi)
+        verts[i, :, 2] = z
+
+    triangles = []
+    for i in range(n_s - 1):
+        for j in range(n_phi):
+            j_next = (j + 1) % n_phi
+            p00 = verts[i, j]
+            p01 = verts[i, j_next]
+            p10 = verts[i + 1, j]
+            p11 = verts[i + 1, j_next]
+            triangles.append((p00, p10, p11))
+            triangles.append((p00, p11, p01))
+
+    if close_caps:
+        c_prox = np.array([0.0, 0.0, float(s[0])], dtype=np.float32)
+        for j in range(n_phi):
+            j_next = (j + 1) % n_phi
+            triangles.append((c_prox, verts[0, j_next], verts[0, j]))
+
+        c_dist = np.array([0.0, 0.0, float(s[-1])], dtype=np.float32)
+        for j in range(n_phi):
+            j_next = (j + 1) % n_phi
+            triangles.append((c_dist, verts[-1, j], verts[-1, j_next]))
+
+    header = b"Coronary Artery Aneurysm 3D Reconstruction - AngioPY".ljust(80, b"\x00")[:80]
+    n_tri = len(triangles)
+    stl_buf = bytearray()
+    stl_buf.extend(header)
+    stl_buf.extend(struct.pack("<I", n_tri))
+
+    for (v1, v2, v3) in triangles:
+        edge1 = v2 - v1
+        edge2 = v3 - v1
+        normal = np.cross(edge1, edge2)
+        norm_len = np.linalg.norm(normal)
+        if norm_len > 1e-6:
+            normal = normal / norm_len
+        else:
+            normal = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+
+        stl_buf.extend(struct.pack("<3f", float(normal[0]), float(normal[1]), float(normal[2])))
+        stl_buf.extend(struct.pack("<3f", float(v1[0]), float(v1[1]), float(v1[2])))
+        stl_buf.extend(struct.pack("<3f", float(v2[0]), float(v2[1]), float(v2[2])))
+        stl_buf.extend(struct.pack("<3f", float(v3[0]), float(v3[1]), float(v3[2])))
+        stl_buf.extend(b"\x00\x00")
+
+    return bytes(stl_buf)
 
 def calibrate_catheter(frame_2d, pt1, pt2, catheter_mm):
     """
@@ -1987,7 +2269,47 @@ def render_biplane_results_content(active_pid, pair, series_map):
         st.metric("Uśredniona długość (L):", f"{simp['L']:.1f} mm")
     with c_m4:
         st.metric("Morfologia:", simp["morphology"])
-        
+
+    # ── Interaktywna rekonstrukcja 3D tętniaka ─────────────────────────────
+    st.markdown("---")
+    st.markdown("#### 🌐 Interaktywna rekonstrukcja 3D tętniaka wieńcowego:")
+    st.caption("Trójwymiarowy model światła naczynia zrekonstruowany z obu obrysów (metoda przekrojów eliptycznych Simpsona). **Możesz swobodnie obracać model myszką w 360°, przybliżać kółkiem myszy i badać geometrię worka tętniaka.**")
+
+    c_3d_ctrl1, c_3d_ctrl2, c_3d_ctrl3, c_3d_ctrl4 = st.columns([1.5, 1.2, 1.2, 1.3])
+    with c_3d_ctrl1:
+        color_mode = st.radio(
+            "Mapa kolorów:",
+            options=["Średnica naczynia [mm]", "Stopień rozstrzeni (x Ref)"],
+            index=0,
+            horizontal=True,
+            key=f"caa_3d_colormode_{pair['aha_code']}"
+        )
+        col_param = "diameter" if "Średnica" in color_mode else "dilation"
+    with c_3d_ctrl2:
+        show_ghost_ref = st.checkbox("Pokaż zdrowe naczynie (Ghost Ref)", value=True, key=f"caa_3d_ref_{pair['aha_code']}", help="Półprzezroczysta powłoka pokazująca referencyjny kształt zdrowego naczynia")
+    with c_3d_ctrl3:
+        show_rings = st.checkbox("Pokaż pierścienie kaliperów", value=True, key=f"caa_3d_rings_{pair['aha_code']}", help="Wyświetla pierścienie na poziomie Ref Prox, Dmax i Ref Dist")
+    with c_3d_ctrl4:
+        stl_data = export_aneurysm_to_stl(simp)
+        st.download_button(
+            label="📥 Pobierz model 3D (STL)",
+            data=stl_data,
+            file_name=f"aneurysm_3d_{active_pid}_{pair.get('aha_code', 'seg')}.stl",
+            mime="application/sla",
+            use_container_width=True,
+            help="Pobierz plik w formacie STL do druku 3D lub przeglądania w programach CAD / 3D Slicer"
+        )
+
+    fig_3d = generate_aneurysm_3d_figure(
+        simp=simp,
+        pair=pair,
+        color_mode=col_param,
+        show_ref=show_ghost_ref,
+        show_rings=show_rings
+    )
+    if fig_3d is not None:
+        st.plotly_chart(fig_3d, use_container_width=True)
+
     st.markdown("---")
     st.markdown("#### 📝 Dokumentacja kliniczna i zapis do bazy:")
     c_doc1, c_doc2 = st.columns(2)
@@ -2048,6 +2370,9 @@ def render_biplane_results_content(active_pid, pair, series_map):
             "dilation_ratio_1": simp["dilation_ratio_1"],
             "dilation_ratio_2": simp["dilation_ratio_2"],
             "length_mm": simp["L"],
+            "d1_slices_mm": simp.get("D1_slices", []),
+            "d2_slices_mm": simp.get("D2_slices", []),
+            "s_slices_mm": simp.get("s_slices", []),
             "p1_series": p1_meta["series_desc"],
             "p1_angles": f"{p1_meta['primary_angle']:+.1f}° / {p1_meta['secondary_angle']:+.1f}°",
             "p2_series": p2_meta["series_desc"],
