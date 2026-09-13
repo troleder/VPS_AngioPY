@@ -209,12 +209,21 @@ def verify_firebase_auth(email_or_username, password):
             user_info = auth.get_user(data["localId"])
             name = user_info.display_name or user_info.email.split("@")[0]
             is_admin = email.lower() == "tomaszroleder@gmail.com" or email.lower().startswith("tomaszroleder@")
+            custom_claims = user_info.custom_claims or {}
+            user_role = custom_claims.get("role")
+            if not user_role:
+                if is_admin:
+                    user_role = "admin"
+                elif email.lower() == "syl.iwanczyk@gmail.com":
+                    user_role = "aneurysm_annotator"
+                else:
+                    user_role = "analyst"
             user_data = {
                 "uid": data["localId"],
                 "username": email.lower().split("@")[0],
                 "email": email,
                 "name": name,
-                "role": "admin" if is_admin else "analyst"
+                "role": user_role
             }
             print(f"[DEBUG] verify_firebase_auth user_data: {user_data}")
             return user_data
@@ -1365,6 +1374,9 @@ def filter_subdirs_by_assignments(nav_path, raw_dirs):
         
     username = st.session_state.user.get("username")
     role = st.session_state.user.get("role")
+    
+    if role == "aneurysm_annotator":
+        return []
     
     print(f"[DEBUG] filter_subdirs_by_assignments: nav_path='{nav_path}', username='{username}', role='{role}'")
     
@@ -3811,11 +3823,20 @@ with st.sidebar:
         else:
             st.success("🟢 Firebase database active")
             
-        # App Mode selection for Admin vs Analyst
-        if st.session_state.user.get("role") == "admin":
+        # App Mode selection for Admin vs Analyst vs Aneurysm Annotator
+        user_role = st.session_state.user.get("role")
+        if user_role == "admin":
             if "app_mode" not in st.session_state or st.session_state.app_mode == "👑 Admin Panel":
                 st.session_state.app_mode = "🔍 Angiography Analysis"
             modes = ["🔍 Angiography Analysis", "📖 Instructions"]
+            selected_mode = st.selectbox("Application Mode", modes, index=modes.index(st.session_state.app_mode) if st.session_state.app_mode in modes else 0, key="app_mode_select")
+            if selected_mode != st.session_state.app_mode:
+                st.session_state.app_mode = selected_mode
+                st.rerun()
+        elif user_role == "aneurysm_annotator":
+            if "app_mode" not in st.session_state or st.session_state.app_mode not in ["🩺 Coronary Aneurysm Annotation", "📖 Instructions"]:
+                st.session_state.app_mode = "🩺 Coronary Aneurysm Annotation"
+            modes = ["🩺 Coronary Aneurysm Annotation", "📖 Instructions"]
             selected_mode = st.selectbox("Application Mode", modes, index=modes.index(st.session_state.app_mode) if st.session_state.app_mode in modes else 0, key="app_mode_select")
             if selected_mode != st.session_state.app_mode:
                 st.session_state.app_mode = selected_mode
@@ -4872,6 +4893,10 @@ elif st.session_state.get("app_mode") == "📊 My Statistics":
     st.stop()
 elif st.session_state.get("app_mode") == "📖 Instructions":
     render_instructions_panel()
+    st.stop()
+elif st.session_state.get("app_mode") == "🩺 Coronary Aneurysm Annotation":
+    from aneurysm_workspace import render_coronary_aneurysm_workspace
+    render_coronary_aneurysm_workspace()
     st.stop()
 
 # ── GRID MODE ─────────────────────────────────────────────────────────────────
