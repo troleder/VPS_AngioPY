@@ -1047,9 +1047,11 @@ def render_projections_gallery(active_pid, series_map):
     else:
         st.info("ℹ️ Nie wybrano jeszcze żadnej projekcji do analizy. Zaznacz '⭐ Wybierz do analizy' przy co najmniej 1–2 projekcjach poniżej.")
 
-    # 2. Unchosen section: under expander
-    st.markdown("---")
-    with st.expander(f"🗂️ Wszystkie pozostałe projekcje z badania ({len(unchosen_items)})", expanded=(len(chosen_items) == 0)):
+    # 2. Unchosen section
+    if unchosen_items:
+        st.markdown("---")
+        section_title = f"🗂️ Wszystkie projekcje z badania ({len(unchosen_items)}):" if len(chosen_items) == 0 else f"🗂️ Wszystkie pozostałe projekcje z badania ({len(unchosen_items)}):"
+        st.markdown(f"#### {section_title}")
         for u_idx, (name, dfp, d_meta) in enumerate(unchosen_items):
             render_series_card(active_pid, name, dfp, d_meta, series_meta, meta_store_key, card_idx=f"unchosen_{u_idx}_{name[:12]}", prefix="unchosen")
 
