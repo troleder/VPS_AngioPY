@@ -20,6 +20,63 @@ from streamlit_drawable_canvas import st_canvas
 import angioPyFunctions
 import predict
 
+# ── AHA Vessel Segment Hierarchy ──────────────────────────────────────────────
+AHA_VESSEL_SEGMENTS = {
+    "LM & LAD – Left Main & Left Anterior Descending": {
+        "key": "LAD",
+        "segments": [
+            ("5", "Seg 5 – Left Main (LMCA)"),
+            ("6", "Seg 6 – Proximal LAD"),
+            ("7", "Seg 7 – Mid LAD"),
+            ("8", "Seg 8 – Distal LAD"),
+            ("9", "Seg 9 – D1 (First Diagonal)"),
+            ("10", "Seg 10 – D2 (Second Diagonal)"),
+            ("16", "Seg 16 – IM (Intermedius)"),
+        ]
+    },
+    "LCx – Left Circumflex": {
+        "key": "CX",
+        "segments": [
+            ("11", "Seg 11 – Proximal LCx"),
+            ("12", "Seg 12 – OM1 (First Obtuse Marginal)"),
+            ("12a", "Seg 12a – OM2 (Second Obtuse Marginal)"),
+            ("13", "Seg 13 – Distal LCx"),
+            ("14L", "Seg 14L – PL (Posterolateral Branch)"),
+            ("15", "Seg 15 – PDA (Left Dominant)"),
+        ]
+    },
+    "RCA – Right Coronary Artery": {
+        "key": "RCA",
+        "segments": [
+            ("1", "Seg 1 – Proximal RCA"),
+            ("2", "Seg 2 – Mid RCA"),
+            ("3", "Seg 3 – Distal RCA"),
+            ("4", "Seg 4 – PDA (Posterior Descending)"),
+            ("14R", "Seg 14R – PLV (Posterior Left Ventricular)"),
+        ]
+    },
+}
+ALL_SYSTEM_NAMES = list(AHA_VESSEL_SEGMENTS.keys())
+
+def _seg_labels(system_name):
+    if system_name in AHA_VESSEL_SEGMENTS:
+        return [s[1] for s in AHA_VESSEL_SEGMENTS[system_name]["segments"]]
+    return []
+
+def _seg_codes(system_name):
+    if system_name in AHA_VESSEL_SEGMENTS:
+        return [s[0] for s in AHA_VESSEL_SEGMENTS[system_name]["segments"]]
+    return []
+
+def safe_display_image(img, caption=None):
+    try:
+        st.image(img, caption=caption, use_column_width=True)
+    except TypeError:
+        try:
+            st.image(img, caption=caption, use_container_width=True)
+        except TypeError:
+            st.image(img, caption=caption)
+
 # Storage base for Sylwia's uploaded patient cases
 ANEURYSM_STORAGE_DIR = "/var/www/analiza-dicom/aneurysm_storage/sylwia"
 if not os.path.exists(os.path.dirname(ANEURYSM_STORAGE_DIR)):
@@ -146,6 +203,100 @@ def simpsons_volume_biplane(d1_max, d2_max, ref1, ref2, length_mm, n_slices=20):
     excess_volume_mm3 = max(0.0, total_volume_mm3 - healthy_volume_mm3)
     
     return total_volume_mm3, excess_volume_mm3
+
+def compute_biplane_simpsons_volumetry(thick1, cum_dist1, prox1, dist1, max1, thick2, cum_dist2, prox2, dist2, max2, n_slices=30):
+    """
+    Computes true biplane 3D lumen volume directly from two segmented projection profiles:
+    - Normalizes centerline path length between proximal and distal landmarks
+    - Evaluates cross-sectional orthogonal diameters D1(s) and D2(s) along the length
+    - Evaluates reference vessel diameters Dref1(s) and Dref2(s)
+    - Integrates elliptical slice areas: A(s) = (pi / 4) * D1(s) * D2(s)
+    - Computes total volume and excess aneurysm pouch volume
+    - Computes cross-sectional eccentricity and morphological ratios
+    """
+    try:
+        # Segment 1
+        i_s1, i_e1 = min(prox1, dist1), max(prox1, dist1)
+        i_s1 = max(0, min(len(thick1) - 1, i_s1))
+        i_e1 = max(0, min(len(thick1) - 1, i_e1))
+        if i_s1 == i_e1:
+            i_s1, i_e1 = 0, len(thick1) - 1
+            
+        L1 = float(abs(cum_dist1[i_e1] - cum_dist1[i_s1]))
+        if L1 < 0.5: L1 = 5.0
+        
+        seg_thick1 = thick1[i_s1:i_e1+1]
+        u1 = np.linspace(0.0, 1.0, len(seg_thick1))
+        u_eval = np.linspace(0.0, 1.0, n_slices + 1)
+        D1 = np.interp(u_eval, u1, seg_thick1)
+        ref1_prox, ref1_dist = float(D1[0]), float(D1[-1])
+        ref1_mean = (ref1_prox + ref1_dist) / 2.0
+        Dref1 = ref1_prox + u_eval * (ref1_dist - ref1_prox)
+
+        # Segment 2
+        i_s2, i_e2 = min(prox2, dist2), max(prox2, dist2)
+        i_s2 = max(0, min(len(thick2) - 1, i_s2))
+        i_e2 = max(0, min(len(thick2) - 1, i_e2))
+        if i_s2 == i_e2:
+            i_s2, i_e2 = 0, len(thick2) - 1
+            
+        L2 = float(abs(cum_dist2[i_e2] - cum_dist2[i_s2]))
+        if L2 < 0.5: L2 = 5.0
+        
+        seg_thick2 = thick2[i_s2:i_e2+1]
+        u2 = np.linspace(0.0, 1.0, len(seg_thick2))
+        D2 = np.interp(u_eval, u2, seg_thick2)
+        ref2_prox, ref2_dist = float(D2[0]), float(D2[-1])
+        ref2_mean = (ref2_prox + ref2_dist) / 2.0
+        Dref2 = ref2_prox + u_eval * (ref2_dist - ref2_prox)
+
+        L = (L1 + L2) / 2.0
+        ds = L / n_slices
+
+        areas = (np.pi / 4.0) * D1 * D2
+        ref_areas = (np.pi / 4.0) * Dref1 * Dref2
+        excess_areas = np.maximum(0.0, areas - ref_areas)
+
+        weights = np.ones(len(areas))
+        weights[1:-1:2] = 4.0
+        weights[2:-2:2] = 2.0
+
+        total_vol = (ds / 3.0) * float(np.sum(weights * areas))
+        ref_vol = (ds / 3.0) * float(np.sum(weights * ref_areas))
+        excess_vol = (ds / 3.0) * float(np.sum(weights * excess_areas))
+
+        d1_max = float(np.max(D1))
+        d2_max = float(np.max(D2))
+        a = max(d1_max, d2_max)
+        b = min(d1_max, d2_max)
+        ellipticity = float(a / b) if b > 0 else 1.0
+        eccentricity = float(np.sqrt(max(0.0, 1.0 - (b / a)**2))) if a > 0 else 0.0
+
+        dil_ratio_1 = round(d1_max / ref1_mean, 2) if ref1_mean > 0 else 1.0
+        dil_ratio_2 = round(d2_max / ref2_mean, 2) if ref2_mean > 0 else 1.0
+
+        morphology = "Wrzecionowaty (Fusiform)" if (L / a >= 2.0) else "Workowaty (Saccular)"
+
+        return {
+            "total_vol": round(total_vol, 2),
+            "excess_vol": round(excess_vol, 2),
+            "ref_vol": round(ref_vol, 2),
+            "d1_max": round(d1_max, 2),
+            "d2_max": round(d2_max, 2),
+            "ref1_mean": round(ref1_mean, 2),
+            "ref2_mean": round(ref2_mean, 2),
+            "L1": round(L1, 2),
+            "L2": round(L2, 2),
+            "L": round(L, 2),
+            "ellipticity": round(ellipticity, 2),
+            "eccentricity": round(eccentricity, 2),
+            "dilation_ratio_1": dil_ratio_1,
+            "dilation_ratio_2": dil_ratio_2,
+            "morphology": morphology
+        }
+    except Exception as e:
+        print(f"Error in compute_biplane_simpsons_volumetry: {e}")
+        return None
 
 def calibrate_catheter(frame_2d, pt1, pt2, catheter_mm):
     """
@@ -485,154 +636,294 @@ def render_aneurysm_overlay(base_img_512, mask_2d=None, profile=None, landmarks=
         
     return overlay
 
-def render_coronary_aneurysm_workspace():
-    st.markdown("<h1 style='color: #38bdf8; font-family: Outfit, sans-serif;'>🩺 Coronary Artery Aneurysm (CAA) Workspace</h1>", unsafe_allow_html=True)
-    st.markdown("Dedicated platform for quantitative assessment, morphological classification, eccentricity, and 3D Simpson volume analysis of coronary aneurysms.")
-    
-    ensure_storage_dir()
-    
-    # ── 1. PATIENT SELECTION & UPLOAD LIBRARY ─────────────────────────────
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 📁 My Patient Cases (Private Library)")
-    
-    patients = get_aneurysm_patients()
-    
-    if "aneurysm_patient_id" not in st.session_state:
-        st.session_state.aneurysm_patient_id = patients[0] if patients else ""
-        
-    selected_pat = st.sidebar.selectbox(
-        "Select Patient Case:",
-        options=["-- Select Patient --"] + patients if patients else ["(No cases uploaded yet)"],
-        index=(patients.index(st.session_state.aneurysm_patient_id) + 1) if (patients and st.session_state.aneurysm_patient_id in patients) else 0,
-        key="aneurysm_patient_select"
-    )
-    if selected_pat and selected_pat not in ["-- Select Patient --", "(No cases uploaded yet)"]:
-        st.session_state.aneurysm_patient_id = selected_pat
-        
-    with st.sidebar.expander("📤 Upload New Patient Case (ZIP / Folder)", expanded=(len(patients) == 0)):
-        st.markdown("Upload DICOM files or a ZIP archive from your computer. The archive will be saved permanently in your private server library.")
-        uploaded_zip = st.file_uploader("Choose DICOM ZIP Archive:", type=["zip"], key="aneurysm_zip_uploader")
-        
-        default_name = ""
-        if uploaded_zip:
-            default_name = os.path.splitext(uploaded_zip.name)[0]
+def get_norm_512(frame_pixels):
+    norm = frame_pixels.astype(float)
+    p_min, p_max = np.min(norm), np.max(norm)
+    if p_max > p_min:
+        norm = ((norm - p_min) / (p_max - p_min) * 255).astype(np.uint8)
+    else:
+        norm = norm.astype(np.uint8)
+    if norm.shape[0] != 512 or norm.shape[1] != 512:
+        return cv2.resize(norm, (512, 512), interpolation=cv2.INTER_AREA)
+    return norm
+
+def get_series_gif(filepath, pixel_array, cine_rate=15):
+    try:
+        import tempfile
+        tmp_gif_path = os.path.join(tempfile.gettempdir(), f"angio_preview_{os.path.basename(filepath)}_{os.path.getsize(filepath)}.gif")
+        if not os.path.exists(tmp_gif_path):
+            n_frames = pixel_array.shape[0]
+            step = 1 if n_frames <= 30 else 2
+            pil_frames = []
+            for idx in range(0, n_frames, step):
+                fr = pixel_array[idx].astype(float)
+                p_min, p_max = fr.min(), fr.max()
+                if p_max > p_min:
+                    fr = ((fr - p_min) / (p_max - p_min) * 255.0).astype(np.uint8)
+                else:
+                    fr = fr.astype(np.uint8)
+                if fr.shape[0] != 320 or fr.shape[1] != 320:
+                    fr = cv2.resize(fr, (320, 320), interpolation=cv2.INTER_AREA)
+                pil_frames.append(Image.fromarray(fr))
+            if pil_frames:
+                rate = float(cine_rate) if cine_rate > 0 else 15.0
+                duration = int(1000.0 / (rate / step))
+                pil_frames[0].save(tmp_gif_path, save_all=True, append_images=pil_frames[1:], duration=max(30, duration), loop=0)
+        return tmp_gif_path if os.path.exists(tmp_gif_path) else None
+    except Exception as e:
+        print(f"Error generating GIF: {e}")
+        return None
+
+def find_biplane_pairs(series_map, series_meta):
+    """
+    Finds groups of sequences chosen for analysis that share the exact same (vessel_system, aha_code).
+    Returns list of matched biplane pairs.
+    """
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for name, (dfp, d_meta) in series_map.items():
+        m = series_meta.get(name, {})
+        if m.get("chosen_for_analysis") and m.get("vessel_system") and m.get("aha_code"):
+            groups[(m["vessel_system"], m["aha_code"], m.get("aha_label", ""))].append((name, dfp, d_meta))
             
-        custom_patient_name = st.text_input("Patient ID / Study Name:", value=default_name, key="aneurysm_custom_pid_input")
+    pairs = []
+    for (vsys, code, lbl), items in groups.items():
+        if len(items) >= 2:
+            best_p1, best_p2 = items[0], items[1]
+            max_diff = compute_3d_angle_diff(best_p1[2]["primary_angle"], best_p1[2]["secondary_angle"], best_p2[2]["primary_angle"], best_p2[2]["secondary_angle"])
+            if len(items) > 2:
+                for i in range(len(items)):
+                    for j in range(i+1, len(items)):
+                        diff = compute_3d_angle_diff(items[i][2]["primary_angle"], items[i][2]["secondary_angle"], items[j][2]["primary_angle"], items[j][2]["secondary_angle"])
+                        if diff > max_diff:
+                            max_diff = diff
+                            best_p1, best_p2 = items[i], items[j]
+            pairs.append({
+                "system": vsys,
+                "aha_code": code,
+                "aha_label": lbl,
+                "p1_name": best_p1[0],
+                "p1_dfp": best_p1[1],
+                "p1_meta": best_p1[2],
+                "p2_name": best_p2[0],
+                "p2_dfp": best_p2[1],
+                "p2_meta": best_p2[2],
+                "angle_diff": max_diff,
+                "all_items": items
+            })
+    return pairs
+
+# ── 1. WIDOK: PRZEGLĄD WSZYSTKICH PROJEKCJI Z KORONAROGRAFII (GALLERY) ────────
+def render_projections_gallery(active_pid, series_map):
+    st.markdown(f"### 🗂️ Przegląd wszystkich projekcji koronarografii *(Dostępnych projekcji: {len(series_map)})*")
+    st.markdown("Oznacz naczynie i segment AHA dla projekcji. **Gdy wybierzesz dwie projekcje dla tego samego segmentu (pod różnymi kątami), system automatycznie wyliczy z nich objętość 3D Simpsona.**")
+    
+    meta_store_key = f"caa_series_meta_{active_pid}"
+    if meta_store_key not in st.session_state:
+        st.session_state[meta_store_key] = {}
         
-        if uploaded_zip and st.button("🚀 Upload & Save to Library", key="btn_save_aneurysm_zip", use_container_width=True):
-            pid_clean = sanitize_folder_name(custom_patient_name if custom_patient_name.strip() else uploaded_zip.name)
-            target_patient_dir = os.path.join(ANEURYSM_STORAGE_DIR, pid_clean)
-            os.makedirs(target_patient_dir, exist_ok=True)
+    series_meta = st.session_state[meta_store_key]
+    
+    # Initialize series metadata defaults if missing
+    for idx, (name, (dfp, d_meta)) in enumerate(series_map.items()):
+        if name not in series_meta:
+            series_meta[name] = {
+                "vessel_system": ALL_SYSTEM_NAMES[0],
+                "aha_code": _seg_codes(ALL_SYSTEM_NAMES[0])[1] if len(_seg_codes(ALL_SYSTEM_NAMES[0])) > 1 else _seg_codes(ALL_SYSTEM_NAMES[0])[0],
+                "aha_label": _seg_labels(ALL_SYSTEM_NAMES[0])[1] if len(_seg_labels(ALL_SYSTEM_NAMES[0])) > 1 else _seg_labels(ALL_SYSTEM_NAMES[0])[0],
+                "chosen_for_analysis": (idx < 2)  # default select first two
+            }
             
-            with st.spinner(f"Extracting and saving case '{pid_clean}' to private storage..."):
-                try:
-                    with zipfile.ZipFile(uploaded_zip, 'r') as zf:
-                        valid_members = [m for m in zf.infolist() if not m.filename.startswith('__MACOSX') and not os.path.basename(m.filename).startswith('.')]
-                        for m in valid_members:
-                            zf.extract(m, target_patient_dir)
-                    st.success(f"✅ Successfully uploaded and saved case: **{pid_clean}**")
-                    st.session_state.aneurysm_patient_id = pid_clean
-                    time.sleep(1)
+    # Auto-detect biplane pairs
+    detected_pairs = find_biplane_pairs(series_map, series_meta)
+    
+    if detected_pairs:
+        st.markdown("---")
+        for p_idx, pair in enumerate(detected_pairs):
+            diff_deg = pair["angle_diff"]
+            is_valid_angle = (diff_deg >= 30.0)
+            status_icon = "✅" if is_valid_angle else "⚠️"
+            
+            p1_active_frame = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(pair['p1_dfp'])}", 0)
+            p2_active_frame = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(pair['p2_dfp'])}", 0)
+            
+            p1_has_mask = bool(st.session_state.get(f"caa_mask_{active_pid}_{os.path.basename(pair['p1_dfp'])}_{p1_active_frame}") is not None)
+            p2_has_mask = bool(st.session_state.get(f"caa_mask_{active_pid}_{os.path.basename(pair['p2_dfp'])}_{p2_active_frame}") is not None)
+            
+            p1_badge = "🟢 Obrysowana" if p1_has_mask else "⚪ Do obrysowania"
+            p2_badge = "🟢 Obrysowana" if p2_has_mask else "⚪ Do obrysowania"
+            
+            st.markdown(f"""
+            <div style='background-color: #042f2e; border: 1px solid #0f766e; border-left: 6px solid #14b8a6; padding: 14px 18px; border-radius: 8px; margin-bottom: 12px;'>
+                <div style='font-size: 16px; font-weight: 700; color: #5eead4;'>
+                    🎉 Wykryto parę do rekonstrukcji Simpsona 3D: <u>{pair['aha_label']}</u>
+                </div>
+                <div style='margin-top: 6px; font-size: 14px; color: #ccfbf1;'>
+                    📹 <b>Projekcja 1:</b> {pair['p1_meta']['series_desc']} ({pair['p1_meta']['primary_angle']:+.1f}° / {pair['p1_meta']['secondary_angle']:+.1f}°) — <span style='color: {"#34d399" if p1_has_mask else "#facc15"};'>{p1_badge}</span><br/>
+                    🌐 <b>Projekcja 2:</b> {pair['p2_meta']['series_desc']} ({pair['p2_meta']['primary_angle']:+.1f}° / {pair['p2_meta']['secondary_angle']:+.1f}°) — <span style='color: {"#34d399" if p2_has_mask else "#facc15"};'>{p2_badge}</span><br/>
+                    📐 <b>Różnica kątów w przestrzeni 3D:</b> <b>{diff_deg:.1f}°</b> {status_icon} {"(Spełnia warunek ≥ 30° dla reguły Simpsona)" if is_valid_angle else "(Zalecane ≥ 30° dla optymalnej dokładności 3D)"}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            c_pair_btn1, c_pair_btn2, c_pair_btn3 = st.columns([1.5, 1.2, 1.2])
+            with c_pair_btn1:
+                if p1_has_mask and p2_has_mask:
+                    btn_text = f"🚀 Otwórz analizę biplanarną Simpsona 3D ({pair['aha_label']})"
+                    btn_type = "primary"
+                else:
+                    btn_text = f"🔍 Otwórz widok biplanarny Simpsona 3D ({pair['aha_label']})"
+                    btn_type = "secondary"
+                if st.button(btn_text, key=f"btn_open_biplane_pair_{p_idx}", type=btn_type, use_container_width=True):
+                    st.session_state["caa_active_biplane_pair"] = pair
+                    st.session_state["caa_target_view"] = "biplane_simpson"
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Error extracting ZIP archive: {e}")
-                    
-    active_pid = st.session_state.get("aneurysm_patient_id")
-    if not active_pid or active_pid in ["-- Select Patient --", "(No cases uploaded yet)"]:
-        st.info("👋 Welcome! Please upload your patient DICOM archive or select an existing case from the left sidebar to begin analysis.")
-        return
-
-    patient_dir = os.path.join(ANEURYSM_STORAGE_DIR, active_pid)
-    if not os.path.exists(patient_dir):
-        st.warning(f"Patient directory for '{active_pid}' was not found.")
-        return
-
-    # Find all DICOM files in patient directory recursively
-    dicom_files = []
-    for root, _, files in os.walk(patient_dir):
-        for f in files:
-            if f.startswith('.'): continue
-            fp = os.path.join(root, f)
-            if f.lower().endswith('.dcm') or os.path.getsize(fp) > 132:
-                dicom_files.append(fp)
-
-    if not dicom_files:
-        st.warning(f"No DICOM series found in folder '{active_pid}'. Please verify the uploaded archive contains valid DICOM files.")
-        return
-
-    # ── 2. MULTI-PROJECTION DISCOVERY & DUAL-PROJECTION SELECTION ─────────
-    series_map = {}
-    for idx, dfp in enumerate(dicom_files):
-        d_meta = load_dicom_file(dfp)
-        if d_meta is not None:
-            lbl = f"Series #{len(series_map)+1}: {d_meta['series_desc']} (LAO/RAO: {d_meta['primary_angle']:+.1f}°, CRA/CAU: {d_meta['secondary_angle']:+.1f}°, {d_meta['total_frames']} frames)"
-            series_map[lbl] = (dfp, d_meta)
-
-    if not series_map:
-        st.error("Could not parse DICOM headers for this patient.")
-        return
-
-    st.markdown(f"### 🗂️ Active Patient: **{active_pid}** *(Dostępnych projekcji: {len(series_map)})*")
-    
-    # Dual-projection selector for Simpson 3D
-    series_labels = list(series_map.keys())
-    c_proj1, c_proj2 = st.columns(2)
-    with c_proj1:
-        selected_series_lbl = st.selectbox("📹 Projekcja 1 (Główna do segmentacji tętniaka):", options=series_labels, index=0, key="aneurysm_series_select")
-        selected_dfp, d_meta = series_map[selected_series_lbl]
+            with c_pair_btn2:
+                if st.button(f"🎯 Obrysuj Projekcję 1", key=f"btn_outline_p1_{p_idx}", use_container_width=True):
+                    st.session_state["caa_active_series_name"] = pair["p1_name"]
+                    st.session_state["caa_target_view"] = "single_delineation"
+                    st.rerun()
+            with c_pair_btn3:
+                if st.button(f"🎯 Obrysuj Projekcję 2", key=f"btn_outline_p2_{p_idx}", use_container_width=True):
+                    st.session_state["caa_active_series_name"] = pair["p2_name"]
+                    st.session_state["caa_target_view"] = "single_delineation"
+                    st.rerun()
+        st.markdown("---")
         
-    with c_proj2:
-        other_labels = [l for l in series_labels if l != selected_series_lbl]
-        if other_labels:
-            proj2_default_idx = 0
-            # Try to pick one with angle diff >= 30
-            for i, l in enumerate(other_labels):
-                _, d_m2 = series_map[l]
-                if compute_3d_angle_diff(d_meta["primary_angle"], d_meta["secondary_angle"], d_m2["primary_angle"], d_m2["secondary_angle"]) >= 30.0:
-                    proj2_default_idx = i
-                    break
-            proj2_lbl = st.selectbox("🌐 Projekcja 2 (Do objętości 3D Simpsona, kąt ≥ 30°):", options=other_labels, index=proj2_default_idx, key="caa_proj2_select")
-            _, d_meta2 = series_map[proj2_lbl]
-            angle_diff = compute_3d_angle_diff(d_meta["primary_angle"], d_meta["secondary_angle"], d_meta2["primary_angle"], d_meta2["secondary_angle"])
-            if angle_diff >= 30.0:
-                st.caption(f"✅ Różnica kątów w 3D: **{angle_diff:.1f}°** (Spełnia warunek ≥ 30° dla reguły Simpsona)")
-            else:
-                st.caption(f"⚠️ Różnica kątów w 3D: **{angle_diff:.1f}°** (< 30° – kąt projekcji może być zbyt mały)")
-        else:
-            proj2_lbl = None
-            d_meta2 = None
-            angle_diff = 0.0
-            st.caption("ℹ️ Dostępna tylko 1 sekwencja dla tego pacjenta.")
+    st.markdown("#### 📺 Siatka wszystkich sekwencji z badania:")
+    
+    for idx, (name, (dfp, d_meta)) in enumerate(series_map.items()):
+        m = series_meta[name]
+        chosen = m.get("chosen_for_analysis", False)
+        chosen_badge = "⭐ " if chosen else ""
+        
+        active_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(dfp)}", 0)
+        has_mask = bool(st.session_state.get(f"caa_mask_{active_pid}_{os.path.basename(dfp)}_{active_fr}") is not None)
+        status_dot = "🟢" if has_mask else "⚪"
+        
+        with st.expander(f"{status_dot} {chosen_badge}Seria #{idx+1}: {d_meta['series_desc']} (Kąty: {d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°, {d_meta['total_frames']} klatek)", expanded=(idx < 2)):
+            c_card_img, c_card_meta = st.columns([1.2, 1.5])
+            
+            with c_card_img:
+                play_state = st.session_state.get(f"play_gif_{active_pid}_{idx}", False)
+                if play_state:
+                    gif_path = get_series_gif(dfp, d_meta["pixels"], d_meta.get("cine_rate", 15))
+                    if gif_path:
+                        safe_display_image(gif_path, caption=f"Animacja sekwencji | {d_meta['total_frames']} klatek")
+                    else:
+                        norm_f = get_norm_512(d_meta["pixels"][min(int(d_meta['total_frames']/2), d_meta['total_frames']-1)])
+                        safe_display_image(norm_f, caption=f"Klatka środkowa")
+                else:
+                    norm_f = get_norm_512(d_meta["pixels"][min(int(d_meta['total_frames']/2), d_meta['total_frames']-1)])
+                    safe_display_image(norm_f, caption=f"Klatka referencyjna (Kąty: {d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°)")
+                    
+                c_g1, c_g2 = st.columns(2)
+                with c_g1:
+                    btn_lbl = "⏹️ Stop" if play_state else "🎥 Odtwórz CINE"
+                    if st.button(btn_lbl, key=f"btn_play_{active_pid}_{idx}", use_container_width=True):
+                        st.session_state[f"play_gif_{active_pid}_{idx}"] = not play_state
+                        st.rerun()
+                with c_g2:
+                    if st.button("🎯 Obrysuj tę projekcję", key=f"btn_delineate_{active_pid}_{idx}", type="primary", use_container_width=True):
+                        st.session_state["caa_active_series_name"] = name
+                        st.session_state["caa_target_view"] = "single_delineation"
+                        st.rerun()
+                        
+            with c_card_meta:
+                st.markdown(f"**Nazwa serii:** `{d_meta['series_desc']}`")
+                st.markdown(f"**Kąty gantry:** LAO/RAO `{d_meta['primary_angle']:+.1f}°`, CRA/CAU `{d_meta['secondary_angle']:+.1f}°`")
+                st.markdown(f"**Liczba klatek:** `{d_meta['total_frames']}` | **Pixel Spacing:** `{d_meta['spacing']:.3f} mm`")
+                
+                # Chosen for analysis checkbox
+                new_chosen = st.checkbox("⭐ Wybierz do analizy tętniaka", value=chosen, key=f"chk_chosen_{active_pid}_{idx}")
+                if new_chosen != chosen:
+                    m["chosen_for_analysis"] = new_chosen
+                    st.session_state[meta_store_key] = series_meta
+                    st.rerun()
+                    
+                # Vessel System & AHA Segment
+                c_v1, c_v2 = st.columns(2)
+                with c_v1:
+                    cur_sys = m.get("vessel_system") or ALL_SYSTEM_NAMES[0]
+                    if cur_sys not in ALL_SYSTEM_NAMES: cur_sys = ALL_SYSTEM_NAMES[0]
+                    chosen_sys = st.selectbox("Naczynie:", ALL_SYSTEM_NAMES, index=ALL_SYSTEM_NAMES.index(cur_sys), key=f"vessel_sys_{active_pid}_{idx}")
+                    if chosen_sys != cur_sys:
+                        m["vessel_system"] = chosen_sys
+                        m["aha_label"] = _seg_labels(chosen_sys)[0]
+                        m["aha_code"] = _seg_codes(chosen_sys)[0]
+                        st.session_state[meta_store_key] = series_meta
+                        st.rerun()
+                        
+                with c_v2:
+                    seg_labels = _seg_labels(chosen_sys)
+                    seg_codes = _seg_codes(chosen_sys)
+                    cur_lbl = m.get("aha_label") or seg_labels[0]
+                    if cur_lbl not in seg_labels: cur_lbl = seg_labels[0]
+                    chosen_lbl = st.selectbox("Segment AHA:", seg_labels, index=seg_labels.index(cur_lbl), key=f"aha_seg_{active_pid}_{idx}")
+                    if chosen_lbl != cur_lbl:
+                        m["aha_label"] = chosen_lbl
+                        m["aha_code"] = seg_codes[seg_labels.index(chosen_lbl)]
+                        st.session_state[meta_store_key] = series_meta
+                        st.rerun()
+                        
+                if has_mask:
+                    st.success(f"🟢 Ta projekcja jest już obrysowana (Klatka {active_fr + 1}).")
+                else:
+                    st.info("⚪ Ta projekcja nie została jeszcze obrysowana.")
 
-    # ── 3. CINE PLAYER & FRAME SELECTION ──────────────────────────────────
+# ── 2. WIDOK: OBRYSOWANIE POJEDYNCZEJ PROJEKCJI ──────────────────────────────
+def render_single_delineation_view(active_pid, series_map):
+    active_name = st.session_state.get("caa_active_series_name")
+    if not active_name or active_name not in series_map:
+        active_name = list(series_map.keys())[0]
+        st.session_state["caa_active_series_name"] = active_name
+        
+    dfp, d_meta = series_map[active_name]
+    meta_store = st.session_state.get(f"caa_series_meta_{active_pid}", {})
+    s_meta = meta_store.get(active_name, {})
+    
+    c_top1, c_top2 = st.columns([3, 1])
+    with c_top1:
+        st.markdown(f"### 🎯 Delineacja Projekcji: **{d_meta['series_desc']}**")
+        st.caption(f"Kąty: LAO/RAO **{d_meta['primary_angle']:+.1f}°**, CRA/CAU **{d_meta['secondary_angle']:+.1f}°** | Przypisany segment: **{s_meta.get('aha_label', 'Nieustalony')}**")
+    with c_top2:
+        if st.button("🔙 Wróć do przeglądu (Gallery)", use_container_width=True):
+            st.session_state["caa_target_view"] = "gallery"
+            st.rerun()
+            
+    # Check if this series is part of a biplane pair
+    detected_pairs = find_biplane_pairs(series_map, meta_store)
+    matching_pair = None
+    for p in detected_pairs:
+        if p["p1_name"] == active_name or p["p2_name"] == active_name:
+            matching_pair = p
+            break
+            
+    if matching_pair:
+        other_name = matching_pair["p2_name"] if matching_pair["p1_name"] == active_name else matching_pair["p1_name"]
+        other_dfp, other_meta = series_map[other_name]
+        st.info(f"💡 Ta projekcja tworzy parę biplanarną z: **{other_meta['series_desc']}** ({other_meta['primary_angle']:+.1f}° / {other_meta['secondary_angle']:+.1f}°) dla segmentu **{matching_pair['aha_label']}** (Różnica kątów 3D: **{matching_pair['angle_diff']:.1f}°**).")
+        
+    # Cine Frame Slider
     n_frames = d_meta["total_frames"]
-    frame_slider = st.slider("Numer klatki (Cine Frame):", min_value=0, max_value=max(0, n_frames - 1), value=min(int(n_frames / 2), n_frames - 1), key="aneurysm_frame_slider")
+    frame_key = f"caa_frame_{active_pid}_{os.path.basename(dfp)}"
+    if frame_key not in st.session_state:
+        st.session_state[frame_key] = min(int(n_frames / 2), n_frames - 1)
+        
+    frame_slider = st.slider("Numer klatki (Cine Frame):", min_value=0, max_value=max(0, n_frames - 1), value=st.session_state[frame_key], key=f"sl_{frame_key}")
+    st.session_state[frame_key] = frame_slider
     
     frame_pixels = d_meta["pixels"][frame_slider]
-    norm_pixels = frame_pixels.astype(float)
-    p_min, p_max = np.min(norm_pixels), np.max(norm_pixels)
-    if p_max > p_min:
-        norm_pixels = ((norm_pixels - p_min) / (p_max - p_min) * 255).astype(np.uint8)
-    else:
-        norm_pixels = norm_pixels.astype(np.uint8)
-        
-    orig_h, orig_w = norm_pixels.shape
-    if orig_h != 512 or orig_w != 512:
-        norm_512 = cv2.resize(norm_pixels, (512, 512), interpolation=cv2.INTER_AREA)
-        dicom_mm_per_pixel = d_meta["spacing"] * (orig_w / 512.0)
-    else:
-        norm_512 = norm_pixels
-        dicom_mm_per_pixel = d_meta["spacing"]
-
+    norm_512 = get_norm_512(frame_pixels)
     norm_rgb = cv2.cvtColor(norm_512, cv2.COLOR_GRAY2RGB)
-
-    case_key = f"{active_pid}_{os.path.basename(selected_dfp)}_{frame_slider}"
+    dicom_mm_per_pixel = d_meta["spacing"] * (d_meta["pixels"].shape[-1] / 512.0)
+    
+    case_key = f"{active_pid}_{os.path.basename(dfp)}_{frame_slider}"
     mask_key = f"caa_mask_{case_key}"
     prof_key = f"caa_prof_{case_key}"
     lm_key = f"caa_lm_{case_key}"
-    calib_key = f"caa_calib_{active_pid}_{os.path.basename(selected_dfp)}"
+    calib_key = f"caa_calib_{active_pid}_{os.path.basename(dfp)}"
     
-    # Calibration state
     calib_info = st.session_state.get(calib_key, None)
     if calib_info is not None:
         active_mm_pp = calib_info["mm_per_pixel"]
@@ -644,39 +935,32 @@ def render_coronary_aneurysm_workspace():
     active_mask = st.session_state.get(mask_key, None)
     active_profile = st.session_state.get(prof_key, None)
     active_landmarks = st.session_state.get(lm_key, None)
-
-    # ── 4. STEP-BY-STEP WORKSPACE NAVIGATION ─────────────────────────────
-    st.markdown("---")
-    step_key = f"caa_workflow_step_{active_pid}"
     
-    # Safely handle navigation before widget instantiation to avoid Streamlit state mutation error
-    if "caa_target_step" in st.session_state:
-        st.session_state[step_key] = st.session_state.pop("caa_target_step")
+    # Sub-steps
+    st.markdown("---")
+    substep_key = f"caa_substep_{active_pid}_{os.path.basename(dfp)}"
+    if "caa_target_substep" in st.session_state:
+        st.session_state[substep_key] = st.session_state.pop("caa_target_substep")
+    if substep_key not in st.session_state:
+        st.session_state[substep_key] = "1️⃣ Kalibracja cewnika"
         
-    if step_key not in st.session_state:
-        st.session_state[step_key] = "1️⃣ Kalibracja cewnika"
-        
-    current_step = st.radio(
-        "Kolejność procedury analizy:",
-        ["1️⃣ Kalibracja cewnika", "2️⃣ Obrysowanie tętniaka (AI)", "3️⃣ Pomiary, kalipery i Simpson 3D"],
+    current_substep = st.radio(
+        "Kolejność procedury:",
+        ["1️⃣ Kalibracja cewnika", "2️⃣ Obrysowanie tętniaka (AI)", "3️⃣ Pomiary i kalipery"],
         horizontal=True,
-        key=step_key
+        key=substep_key
     )
-
+    
     col_vis, col_params = st.columns([1.3, 1])
-
-    # ══════════════════════════════════════════════════════════════════════
-    # KROK 1: KALIBRACJA CEWNIKA
-    # ══════════════════════════════════════════════════════════════════════
-    if current_step == "1️⃣ Kalibracja cewnika":
+    
+    # ── KROK 1: KALIBRACJA CEWNIKA ──
+    if current_substep == "1️⃣ Kalibracja cewnika":
         with col_vis:
-            st.markdown("#### 📏 Kalibracja cewnika naczyniowego (Catheter Calibration)")
+            st.markdown("#### 📏 Kalibracja cewnika naczyniowego (Auto-QCA)")
             st.markdown("""
             <div style='background-color: #042f2e; border-left: 4px solid #14b8a6; padding: 10px 14px; border-radius: 4px; margin-bottom: 12px; font-size: 14px; color: #ccfbf1;'>
-                <b>Instrukcja kalibracji (Auto-QCA):</b><br/>
-                1. Wybierz rozmiar cewnika diagnostycznego (standardowo 6F lub 5F).<br/>
-                2. Kliknij <b>2 punkty wzdłuż trzonu cewnika</b> na obrazie poniżej (czerwone kropki).<br/>
-                3. Silnik angioPy <b>samoczynnie wykryje krawędzie cewnika</b> za pomocą gradientu subpikselowego i natychmiast przeliczy skalę <code>mm/px</code>.
+                1. Kliknij <b>2 punkty wzdłuż trzonu cewnika</b> na obrazie (czerwone kropki).<br/>
+                2. Silnik subpikselowy samoczynnie wykryje krawędzie cewnika i przeliczy skalę <code>mm/px</code>.
             </div>
             """, unsafe_allow_html=True)
             
@@ -690,20 +974,10 @@ def render_coronary_aneurysm_workspace():
                 if "click1" in calib_info and "click2" in calib_info:
                     p1_i, p2_i = calib_info["click1"], calib_info["click2"]
                     cv2.line(calib_bg, p1_i, p2_i, (0, 255, 0), 1)
-                    dx = p2_i[0] - p1_i[0]
-                    dy = p2_i[1] - p1_i[1]
-                    tube_theta = np.arctan2(dy, dx)
-                    L_w = 20
-                    px = int(round(L_w * np.cos(tube_theta + np.pi/2)))
-                    py = int(round(L_w * np.sin(tube_theta + np.pi/2)))
-                    cv2.line(calib_bg, (p1_i[0]-px, p1_i[1]-py), (p1_i[0]+px, p1_i[1]+py), (255, 0, 0), 1)
-                    cv2.line(calib_bg, (p2_i[0]-px, p2_i[1]-py), (p2_i[0]+px, p2_i[1]+py), (255, 0, 0), 1)
                     cv2.circle(calib_bg, p1_i, 3, (0, 0, 255), -1)
                     cv2.circle(calib_bg, p2_i, 3, (0, 0, 255), -1)
-                if "ref_line" in calib_info:
-                    cv2.line(calib_bg, calib_info["ref_line"][0], calib_info["ref_line"][1], (0, 255, 0), 2)
-
-            calib_canvas_key = f"calib_canvas_{case_key}_{st.session_state.get('caa_calib_suffix', 0)}"
+                    
+            calib_canvas_key = f"calib_cv_{case_key}_{st.session_state.get('caa_calib_sfx', 0)}"
             c_canvas = st_canvas(
                 fill_color="#ff0000",
                 stroke_width=0,
@@ -717,7 +991,7 @@ def render_coronary_aneurysm_workspace():
                 point_display_radius=2,
                 key=calib_canvas_key
             )
-
+            
         with col_params:
             st.markdown("#### Parametry cewnika")
             CATHETER_SIZES = {
@@ -728,12 +1002,7 @@ def render_coronary_aneurysm_workspace():
                 "8F = 2.67 mm": 2.67,
                 "Własny rozmiar (Custom mm)": None
             }
-            cat_choice = st.selectbox(
-                "Rozmiar cewnika:",
-                list(CATHETER_SIZES.keys()),
-                index=0,
-                key="caa_cat_choice"
-            )
+            cat_choice = st.selectbox("Rozmiar cewnika:", list(CATHETER_SIZES.keys()), index=0, key=f"caa_cat_{case_key}")
             if cat_choice == "Własny rozmiar (Custom mm)":
                 catheter_mm = st.number_input("Średnica cewnika [mm]:", min_value=0.5, max_value=5.0, value=1.98, step=0.05)
             else:
@@ -774,7 +1043,7 @@ def render_coronary_aneurysm_workspace():
                                 prof = extract_aneurysm_profile(active_mask, res["mm_per_pixel"])
                                 if prof:
                                     st.session_state[prof_key] = prof
-                            st.session_state["caa_calib_suffix"] = st.session_state.get("caa_calib_suffix", 0) + 1
+                            st.session_state["caa_calib_sfx"] = st.session_state.get("caa_calib_sfx", 0) + 1
                             st.rerun()
                         else:
                             st.error("⚠️ Nie udało się precyzyjnie wykryć krawędzi cewnika. Wskaż 2 punkty w prostym, widocznym odcinku cewnika.")
@@ -782,36 +1051,33 @@ def render_coronary_aneurysm_workspace():
             if calib_info is not None:
                 st.success(f"✅ Kalibracja ({calib_info.get('catheter_name', cat_choice)}): {calib_info['avg_diam_px']:.1f} px = {calib_info['catheter_mm']:.2f} mm → **{calib_info['mm_per_pixel']:.4f} mm/px**")
                 if st.button("➡️ Przejdź do obrysowania tętniaka (Krok 2)", type="primary", use_container_width=True):
-                    st.session_state["caa_target_step"] = "2️⃣ Obrysowanie tętniaka (AI)"
+                    st.session_state["caa_target_substep"] = "2️⃣ Obrysowanie tętniaka (AI)"
                     st.rerun()
                 if st.button("🔄 Skasuj i powtórz kalibrację", use_container_width=True):
                     st.session_state.pop(calib_key, None)
                     st.session_state.pop(f"caa_last_calib_eval_{case_key}", None)
-                    st.session_state["caa_calib_suffix"] = st.session_state.get("caa_calib_suffix", 0) + 1
+                    st.session_state["caa_calib_sfx"] = st.session_state.get("caa_calib_sfx", 0) + 1
                     st.rerun()
             else:
                 st.info(calib_badge)
                 st.caption("Wskaż 2 punkty na cewniku na obrazie obok — system samoczynnie wykryje średnicę cewnika.")
                 if st.button("⚡ Użyj kalibracji DICOM i przejdź do Kroku 2", use_container_width=True):
-                    st.session_state["caa_target_step"] = "2️⃣ Obrysowanie tętniaka (AI)"
+                    st.session_state["caa_target_substep"] = "2️⃣ Obrysowanie tętniaka (AI)"
                     st.rerun()
 
-    # ══════════════════════════════════════════════════════════════════════
-    # KROK 2: OBRYSOWANIE TĘTNIAKA (AI / RĘCZNE)
-    # ══════════════════════════════════════════════════════════════════════
-    elif current_step == "2️⃣ Obrysowanie tętniaka (AI)":
+    # ── KROK 2: OBRYSOWANIE TĘTNIAKA (AI) ──
+    elif current_substep == "2️⃣ Obrysowanie tętniaka (AI)":
         with col_vis:
-            st.markdown("#### 🎯 Wskazywanie tętnicy i segmentacja AI")
+            st.markdown("#### 🎯 Wskazywanie tętnicy i segmentacja AI (angioPy)")
             st.caption(calib_badge)
             st.markdown("""
             <div style='background-color: #0f172a; border-left: 4px solid #38bdf8; padding: 10px 14px; border-radius: 4px; margin-bottom: 12px;'>
-                <b style='color: #38bdf8;'>Kroki obrysowania:</b><br/>
-                1. Kliknij <b>2 do 4 punktów</b> wzdłuż światła naczynia (początek, wybrzuszenie tętniaka, koniec) — punkty są precyzyjnymi czerwonymi kropkami.<br/>
+                1. Kliknij <b>2 do 4 czerwonych kropek</b> wzdłuż światła naczynia (początek, wybrzuszenie tętniaka, koniec).<br/>
                 2. Kliknij zielony przycisk <b>'🚀 Segmentuj tętniak (AI)'</b>.
             </div>
             """, unsafe_allow_html=True)
             
-            canvas_key = f"seg_canvas_{case_key}_{st.session_state.get('caa_canvas_suffix', 0)}"
+            canvas_key = f"seg_cv_{case_key}_{st.session_state.get('caa_cv_sfx', 0)}"
             annot_bg = norm_rgb.copy()
             if active_mask is not None and np.sum(active_mask) > 0:
                 v_mask = (active_mask > 0).astype(np.uint8) * 255
@@ -861,8 +1127,7 @@ def render_coronary_aneurysm_workspace():
                                             "dist": prof["dist_idx"],
                                             "max": prof["max_idx"]
                                         }
-                                        # Safely route to step 3
-                                        st.session_state["caa_target_step"] = "3️⃣ Pomiary, kalipery i Simpson 3D"
+                                        st.session_state["caa_target_substep"] = "3️⃣ Pomiary i kalipery"
                                         st.success("✅ Sukces: Tętniak został obrysowany!")
                                         time.sleep(0.5)
                                         st.rerun()
@@ -876,171 +1141,57 @@ def render_coronary_aneurysm_workspace():
                         st.warning("Kliknij najpierw punkty na obrazie.")
                             
             with c_seg2:
-                if st.button("🗑️ Wyczyść punkty", key=f"btn_clr_pts_{case_key}", use_container_width=True):
-                    st.session_state["caa_canvas_suffix"] = st.session_state.get("caa_canvas_suffix", 0) + 1
+                if st.button("🗑️ Wyczyść punkty", key=f"btn_clr_{case_key}", use_container_width=True):
+                    st.session_state["caa_cv_sfx"] = st.session_state.get("caa_cv_sfx", 0) + 1
                     st.rerun()
 
         with col_params:
-            st.markdown("#### Informacje o segmentacji")
+            st.markdown("#### Status obrysu")
             if active_mask is not None:
-                st.success("✅ Obrys tętniaka jest już aktywny dla tej klatki.")
+                st.success("✅ Obrys tętniaka jest aktywny.")
                 if st.button("👁️ Przejdź do pomiarów i kaliperów (Krok 3)", type="primary", use_container_width=True):
-                    st.session_state["caa_target_step"] = "3️⃣ Pomiary, kalipery i Simpson 3D"
+                    st.session_state["caa_target_substep"] = "3️⃣ Pomiary i kalipery"
                     st.rerun()
             else:
-                st.info("Brak wykonanej segmentacji dla bieżącej klatki. Wskaż punkty po lewej stronie i uruchom AI.")
-                
-            st.markdown("---")
-            with st.expander("✏️ Ręczna korekta obrysu worka (Zoom & Nudge)", expanded=False):
-                st.caption("Powiększ obraz i dorysuj lub skoryguj obrys worka tętniaka (np. pominiętą skrzeplinę).")
-                c_z1, c_z2, c_z3 = st.columns(3)
-                zoom = c_z1.slider("🔍 Zoom", 1.0, 3.0, 1.0, 0.5, key=f"caa_zoom_{case_key}")
-                if zoom > 1.0:
-                    h_z = int(512 / zoom)
-                    w_z = int(512 / zoom)
-                    focus_x = c_z2.slider("🧭 Centrum X", w_z//2, 512 - w_z//2, 256, key=f"caa_focx_{case_key}")
-                    focus_y = c_z3.slider("🧭 Centrum Y", h_z//2, 512 - h_z//2, 256, key=f"caa_focy_{case_key}")
-                else:
-                    focus_x, focus_y = 256, 256
-                    
-                stroke_width = st.slider("🖌 Grubość pędzla", 2, 30, 8, key=f"caa_stroke_{case_key}")
-                curr_bg = norm_rgb.copy()
-                if active_mask is not None and np.sum(active_mask) > 0:
-                    cnts_c, _ = cv2.findContours(active_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-                    cv2.drawContours(curr_bg, cnts_c, -1, (0, 255, 0), 2)
-                    
-                if zoom > 1.0:
-                    hz, wz = int(512 / zoom), int(512 / zoom)
-                    top = int(np.clip(focus_y - hz // 2, 0, 512 - hz))
-                    left = int(np.clip(focus_x - wz // 2, 0, 512 - wz))
-                    viewport_bg = cv2.resize(curr_bg[top:top+hz, left:left+wz], (512, 512), interpolation=cv2.INTER_LINEAR)
-                else:
-                    viewport_bg = curr_bg
-                    top, left, wz, hz = 0, 0, 512, 512
-                    
-                nudge_canvas_key = f"nudge_canvas_{case_key}_{st.session_state.get('caa_nudge_suffix', 0)}"
-                nudge_canvas = st_canvas(
-                    fill_color="rgba(255, 140, 0, 0.4)",
-                    stroke_width=stroke_width,
-                    stroke_color="rgba(255, 140, 0, 0.9)",
-                    background_color="black",
-                    background_image=Image.fromarray(viewport_bg),
-                    update_streamlit=True,
-                    height=512,
-                    width=512,
-                    drawing_mode="freedraw",
-                    key=nudge_canvas_key
-                )
-                
-                if st.button("✅ Zastosuj dorysowany obrys do maski", key=f"btn_apply_nudge_{case_key}", use_container_width=True):
-                    if nudge_canvas.json_data is not None and "objects" in nudge_canvas.json_data:
-                        objs = nudge_canvas.json_data["objects"]
-                        if len(objs) > 0:
-                            base_mask = active_mask.copy() if active_mask is not None else np.zeros((512, 512), dtype=np.uint8)
-                            for obj in objs:
-                                if obj.get("type") == "path":
-                                    path_cmds = obj.get("path", [])
-                                    stroke_pts = []
-                                    for cmd in path_cmds:
-                                        if len(cmd) >= 3:
-                                            stroke_pts.append([cmd[-2], cmd[-1]])
-                                    if len(stroke_pts) > 1:
-                                        stroke_pts = np.array(stroke_pts, dtype=np.float32)
-                                        scaled_pts = np.zeros_like(stroke_pts)
-                                        scaled_pts[:, 0] = left + stroke_pts[:, 0] * (wz / 512.0)
-                                        scaled_pts[:, 1] = top + stroke_pts[:, 1] * (hz / 512.0)
-                                        cv2.polylines(base_mask, [scaled_pts.astype(np.int32)], isClosed=False, color=255, thickness=int(stroke_width * (wz / 512.0)))
-                            prof = extract_aneurysm_profile(base_mask, active_mm_pp)
-                            if prof is not None:
-                                st.session_state[mask_key] = base_mask
-                                st.session_state[prof_key] = prof
-                                st.session_state[lm_key] = {
-                                    "prox": prof["prox_idx"],
-                                    "dist": prof["dist_idx"],
-                                    "max": prof["max_idx"]
-                                }
-                                st.session_state["caa_nudge_suffix"] = st.session_state.get("caa_nudge_suffix", 0) + 1
-                                st.session_state["caa_target_step"] = "3️⃣ Pomiary, kalipery i Simpson 3D"
-                                st.success("✅ Obrys zaktualizowany!")
-                                time.sleep(0.5)
-                                st.rerun()
+                st.info("Brak obrysu. Wskaż punkty na naczyniu i kliknij przycisk po lewej stronie.")
 
-    # ══════════════════════════════════════════════════════════════════════
-    # KROK 3: POMIARY, KALIPERY I SIMPSON 3D
-    # ══════════════════════════════════════════════════════════════════════
-    elif current_step == "3️⃣ Pomiary, kalipery i Simpson 3D":
+    # ── KROK 3: POMIARY I KALIPERY ──
+    elif current_substep == "3️⃣ Pomiary i kalipery":
         with col_vis:
-            st.markdown("#### 🔬 Podgląd obrysu, osi i kaliperów pomiarowych")
+            st.markdown("#### 🔬 Podgląd obrysu, osi naczynia i kaliperów")
             st.caption(calib_badge)
             
             default_dims = {
-                "ref_prox": st.session_state.get(f"caa_ref_prox_{case_key}", 3.0),
-                "ref_dist": st.session_state.get(f"caa_ref_dist_{case_key}", 2.6),
-                "max_diam": st.session_state.get(f"caa_max_diam_{case_key}", 6.2),
+                "ref_prox": 3.0,
+                "ref_dist": 2.6,
+                "max_diam": 6.2,
                 "mm_pp": active_mm_pp
             }
+            overlay_img = render_aneurysm_overlay(norm_512, active_mask, active_profile, active_landmarks, default_dims=default_dims)
+            safe_display_image(overlay_img, caption=f"Klatka {frame_slider + 1}/{n_frames} | {d_meta['series_desc']} | Kąty: {d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°")
             
-            overlay_img = render_aneurysm_overlay(
-                norm_512, active_mask, active_profile, active_landmarks, default_dims=default_dims
-            )
-            pil_overlay = Image.fromarray(overlay_img)
-            try:
-                st.image(pil_overlay, caption=f"Klatka {frame_slider + 1}/{n_frames} | {d_meta['series_desc']} | Kąty: {d_meta['primary_angle']}° / {d_meta['secondary_angle']}°", use_column_width=True)
-            except Exception:
-                st.image(pil_overlay, caption=f"Klatka {frame_slider + 1}/{n_frames}")
-                
             if active_mask is not None and active_profile is not None:
-                with st.expander("📍 Precyzyjna korekta pozycji znaczników (Landmarks)", expanded=True):
-                    st.caption("Przesuwaj suwaki, aby dokładnie skorygować punkty pomiaru referencji i najszerszego miejsca tętniaka wzdłuż osi naczynia:")
+                with st.expander("📍 Korekta pozycji znaczników (Landmarks)", expanded=True):
                     N_pts = len(active_profile["sp_x"])
-                    
                     p_def = active_landmarks["prox"] if active_landmarks else active_profile["prox_idx"]
                     d_def = active_landmarks["dist"] if active_landmarks else active_profile["dist_idx"]
                     m_def = active_landmarks["max"] if active_landmarks else active_profile["max_idx"]
                     
                     c_sl1, c_sl2, c_sl3 = st.columns(3)
-                    prox_override = c_sl1.slider("Ref Proksymalna", 0, N_pts - 1, int(p_def), key=f"sl_prox_{case_key}")
-                    dist_override = c_sl2.slider("Ref Dystalna", 0, N_pts - 1, int(d_def), key=f"sl_dist_{case_key}")
-                    max_override = c_sl3.slider("Max Dilation (Dmax)", 0, N_pts - 1, int(m_def), key=f"sl_max_{case_key}")
+                    prox_override = c_sl1.slider("Ref Proksymalna", 0, N_pts - 1, int(p_def), key=f"sl_p_{case_key}")
+                    dist_override = c_sl2.slider("Ref Dystalna", 0, N_pts - 1, int(d_def), key=f"sl_d_{case_key}")
+                    max_override = c_sl3.slider("Max Dilation (Dmax)", 0, N_pts - 1, int(m_def), key=f"sl_m_{case_key}")
                     
-                    c_lm_btn1, c_lm_btn2 = st.columns(2)
-                    if c_lm_btn1.button("✅ Zastosuj pozycje znaczników", key=f"btn_apply_lm_{case_key}", use_container_width=True):
-                        st.session_state[lm_key] = {
-                            "prox": prox_override,
-                            "dist": dist_override,
-                            "max": max_override
-                        }
+                    c_b1, c_b2 = st.columns(2)
+                    if c_b1.button("✅ Zastosuj pozycje znaczników", key=f"btn_apply_lm_{case_key}", use_container_width=True):
+                        st.session_state[lm_key] = {"prox": prox_override, "dist": dist_override, "max": max_override}
                         st.rerun()
-                        
-                    if c_lm_btn2.button("↩ Przywróć wykryte automatycznie", key=f"btn_rev_lm_{case_key}", use_container_width=True):
-                        st.session_state[lm_key] = {
-                            "prox": active_profile["prox_idx"],
-                            "dist": active_profile["dist_idx"],
-                            "max": active_profile["max_idx"]
-                        }
+                    if c_b2.button("↩ Przywróć wykryte automatycznie", key=f"btn_reset_lm_{case_key}", use_container_width=True):
+                        st.session_state[lm_key] = {"prox": active_profile["prox_idx"], "dist": active_profile["dist_idx"], "max": active_profile["max_idx"]}
                         st.rerun()
-            else:
-                st.info("💡 Powyżej widoczne są kalipery referencyjne. Aby sieć neuronowa automatycznie dopasowała obrys do anatomii, przejdź do: **2️⃣ Obrysowanie tętniaka (AI)**.")
-                if st.button("👉 Przejdź do wskazywania punktów (Segmentacja AI)", key=f"btn_go_to_seg_{case_key}", use_container_width=True):
-                    st.session_state["caa_target_step"] = "2️⃣ Obrysowanie tętniaka (AI)"
-                    st.rerun()
 
         with col_params:
-            st.markdown("#### Aneurysm Morphology & Measurements")
-            
-            c_v1, c_v2 = st.columns(2)
-            with c_v1:
-                vessel = st.selectbox("Coronary Vessel:", ["LAD", "LCx", "RCA", "LM (Left Main)"], key="caa_vessel")
-                morphology = st.selectbox("Aneurysm Morphology:", ["Workowaty (Saccular)", "Wrzecionowaty (Fusiform)", "Ektazja naczynia (Coronary Ectasia)"], key="caa_morph")
-            with c_v2:
-                aha_segment = st.selectbox("AHA Segment:", [f"Segment {i}" for i in range(1, 17)], index=5 if vessel=="LAD" else (0 if vessel=="RCA" else 10), key="caa_aha")
-                thrombus = st.selectbox("Thrombus Presence:", ["Brak (None)", "Obecna (Present)", "Podejrzenie (Suspected)"], key="caa_thrombus")
-                
-            calcification = st.selectbox("Wall Calcification:", ["Brak (None)", "Łagodne (Mild)", "Masywne (Severe)"], key="caa_calc")
-            
-            st.markdown("---")
-            st.markdown("##### 📏 Quantitative Calibration & Dimensions")
-            
+            st.markdown("#### Pomiary i wskaźnik rozszerzenia")
             if active_profile is not None:
                 p_idx = active_landmarks["prox"] if active_landmarks else active_profile["prox_idx"]
                 d_idx = active_landmarks["dist"] if active_landmarks else active_profile["dist_idx"]
@@ -1053,185 +1204,401 @@ def render_coronary_aneurysm_workspace():
                 calc_ref_prox = round(float(active_profile["thickness_mm"][p_idx]), 2)
                 calc_ref_dist = round(float(active_profile["thickness_mm"][d_idx]), 2)
                 calc_max_diam = round(float(active_profile["thickness_mm"][m_idx]), 2)
+                calc_ref_mean = round((calc_ref_prox + calc_ref_dist) / 2.0, 2)
                 calc_len = round(float(abs(active_profile["cum_dist_mm"][d_idx] - active_profile["cum_dist_mm"][p_idx])), 2)
                 if calc_len < 1.0: calc_len = 5.0
-            else:
-                calc_ref_prox = 3.0
-                calc_ref_dist = 2.6
-                calc_max_diam = 6.2
-                calc_len = 12.5
                 
-            col_dim1, col_dim2 = st.columns(2)
-            with col_dim1:
-                ref_prox = st.number_input("Proximal Reference [mm]:", min_value=0.5, max_value=15.0, value=float(calc_ref_prox), step=0.1, key=f"caa_ref_prox_{case_key}")
-                ref_dist = st.number_input("Distal Reference [mm]:", min_value=0.5, max_value=15.0, value=float(calc_ref_dist), step=0.1, key=f"caa_ref_dist_{case_key}")
-                aneurysm_len = st.number_input("Aneurysm Length [mm]:", min_value=1.0, max_value=100.0, value=float(calc_len), step=0.5, key=f"caa_len_{case_key}")
+                exp_ratio = round(calc_max_diam / calc_ref_mean, 2) if calc_ref_mean > 0 else 1.0
+                pct_dil = round((exp_ratio - 1.0) * 100.0, 1)
                 
-            with col_dim2:
-                max_diam = st.number_input("Max Aneurysm Diameter [mm]:", min_value=0.5, max_value=40.0, value=float(calc_max_diam), step=0.1, key=f"caa_max_diam_{case_key}")
-                ref_mode = st.radio("Reference Baseline:", ["Interpolated (Midpoint)", "Proximal Only", "Distal Only"], horizontal=True, key=f"caa_ref_mode_{case_key}")
-                
-            if ref_mode == "Interpolated (Midpoint)":
-                interp_ref = round((ref_prox + ref_dist) / 2.0, 2)
-            elif ref_mode == "Proximal Only":
-                interp_ref = ref_prox
-            else:
-                interp_ref = ref_dist
-                
-            expansion_ratio = round(max_diam / interp_ref, 2) if interp_ref > 0 else 1.0
-            pct_dilation = round((expansion_ratio - 1.0) * 100.0, 1)
-            
-            if expansion_ratio < 1.2:
-                cls_text = "⚪ Normal / Mild Normal Variation (< 1.2x)"
-                cls_badge = "color: #94a3b8;"
-            elif expansion_ratio < 1.5:
-                cls_text = "🟡 Borderline / Coronary Ectasia (1.2 - 1.5x)"
-                cls_badge = "color: #facc15;"
-            elif max_diam >= 8.0 or expansion_ratio >= 4.0:
-                cls_text = "🔴 GIANT Coronary Aneurysm (≥ 8 mm or ≥ 4.0x)"
-                cls_badge = "color: #ef4444; font-weight: bold;"
-            else:
-                cls_text = "🟠 Coronary Artery Aneurysm (> 1.5x)"
-                cls_badge = "color: #fb923c; font-weight: bold;"
-                
-            st.markdown(f"""
-            <div style='background-color: #0f172a; padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-top: 10px;'>
-                <div style='font-size: 13px; color: #94a3b8;'>Wskaźnik rozszerzenia / Ekscentryczność:</div>
-                <div style='font-size: 20px; font-weight: 700; color: #38bdf8;'>{expansion_ratio}x <span style='font-size: 14px; font-weight: normal; color: #cbd5e1;'>({pct_dilation:+.1f}% względem ref {interp_ref} mm)</span></div>
-                <div style='font-size: 13px; margin-top: 4px; {cls_badge}'>{cls_text}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            st.markdown("---")
-            has_stenosis = st.checkbox("Współistniejące zwężenie w obrębie tętniaka (Concomitant Stenosis)", key=f"caa_has_stenosis_{case_key}")
-            mld_val = None
-            pct_stenosis = 0.0
-            if has_stenosis:
-                c_s1, c_s2 = st.columns(2)
-                with c_s1:
-                    mld_val = st.number_input("Minimal Lumen Diameter (MLD) [mm]:", min_value=0.2, max_value=float(interp_ref), value=min(1.5, float(interp_ref)), step=0.1, key=f"caa_mld_input_{case_key}")
-                with c_s2:
-                    pct_stenosis = round((1.0 - (mld_val / interp_ref)) * 100.0, 1)
-                    st.metric("% Stenosis:", f"{pct_stenosis}%", delta=f"-{round(interp_ref - mld_val, 2)} mm")
-
-    # ── 5. BIPLANE DUAL-PROJECTION 3D SIMPSON VOLUME MODULE ──────────────
-    st.markdown("---")
-    st.markdown("### 🌐 Biplane Dual-Projection Volumetry (Reguła Simpsona 3D)")
-    
-    with st.expander("Oblicz objętość 3D tętniaka z 2 różnych projekcji pod kątem ≥ 30°", expanded=True):
-        st.markdown(r"""
-        Wyliczenie objętości tętniaka metodą eliptycznych dysków Simpsona z dwóch prostopadłych lub rozbieżnych projekcji ($\Delta \theta \ge 30^\circ$).
-        """)
-        
-        if proj2_lbl and d_meta2 is not None:
-            c_bp_dim1, c_bp_dim2 = st.columns(2)
-            with c_bp_dim1:
-                st.markdown(f"**Projekcja 1:** `{d_meta['series_desc']}` ({d_meta['primary_angle']:+.1f}° / {d_meta['secondary_angle']:+.1f}°)")
-                st.markdown(f"**Projekcja 2:** `{d_meta2['series_desc']}` ({d_meta2['primary_angle']:+.1f}° / {d_meta2['secondary_angle']:+.1f}°)")
-                st.markdown(f"**Różnica kątów w przestrzeni:** **{angle_diff:.1f}°** " + ("✅ (Spełnia warunek ≥ 30°)" if angle_diff>=30 else "⚠️ (< 30°)"))
-                
-                d2_max_diam = st.number_input("Max Diameter w Projekcji 2 [mm]:", min_value=0.5, max_value=40.0, value=float(max_diam), step=0.1, key="caa_d2_max")
-                d2_ref = st.number_input("Referencja w Projekcji 2 [mm]:", min_value=0.5, max_value=15.0, value=float(interp_ref), step=0.1, key="caa_d2_ref")
-                
-            with c_bp_dim2:
-                total_vol, excess_vol = simpsons_volume_biplane(
-                    d1_max=max_diam, d2_max=d2_max_diam,
-                    ref1=interp_ref, ref2=d2_ref,
-                    length_mm=aneurysm_len
-                )
-                
+                st.metric("Maksymalna średnica (Dmax):", f"{calc_max_diam} mm")
+                st.metric("Referencja uśredniona (Ref):", f"{calc_ref_mean} mm", delta=f"Proks: {calc_ref_prox} | Dyst: {calc_ref_dist}")
+                st.metric("Długość naczynia (Length):", f"{calc_len} mm")
                 st.markdown(f"""
-                <div style='background-color: #042f2e; padding: 14px; border-radius: 8px; border: 1px solid #0f766e;'>
-                    <div style='color: #2dd4bf; font-size: 13px; font-weight: 600;'>📐 Wyniki objętości metodą Simpsona (Simpson's Discs):</div>
-                    <div style='font-size: 22px; font-weight: 700; color: #5eead4; margin-top: 4px;'>
-                        {total_vol:.1f} mm³ <span style='font-size: 14px; font-weight: normal; color: #ccfbf1;'>({total_vol:.1f} μl)</span>
-                    </div>
-                    <div style='font-size: 13px; color: #a7f3d0; margin-top: 4px;'>
-                        Objętość nadmiarowa rozstrzeni: <b>{excess_vol:.1f} mm³</b>
-                    </div>
+                <div style='background-color: #0f172a; padding: 12px; border-radius: 8px; border: 1px solid #334155; margin-top: 10px;'>
+                    <div style='font-size: 13px; color: #94a3b8;'>Ekscentryczność / Wskaźnik poszerzenia:</div>
+                    <div style='font-size: 22px; font-weight: 700; color: #38bdf8;'>{exp_ratio}x <span style='font-size: 14px; color: #cbd5e1;'>({pct_dil:+.1f}%)</span></div>
                 </div>
                 """, unsafe_allow_html=True)
-                
-            st.session_state["caa_calculated_volume"] = {
-                "total_volume_mm3": round(total_vol, 2),
-                "excess_volume_mm3": round(excess_vol, 2),
-                "angle_diff_deg": round(angle_diff, 1),
-                "proj2_name": d_meta2["series_desc"]
-            }
-        else:
-            st.info("Wybierz drugą sekwencję powyżej, aby wyznaczyć objętość trójwymiarową Simpsona.")
+            else:
+                st.info("Wskaż punkty i wykonaj segmentację, aby wyliczyć wymiary.")
 
-    # ── 6. SAVE ANNOTATION TO FIRESTORE ───────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### 🧭 Nawigacja:")
+            if matching_pair:
+                other_name = matching_pair["p2_name"] if matching_pair["p1_name"] == active_name else matching_pair["p1_name"]
+                other_dfp, other_meta = series_map[other_name]
+                other_active_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(other_dfp)}", 0)
+                other_has_mask = bool(st.session_state.get(f"caa_mask_{active_pid}_{os.path.basename(other_dfp)}_{other_active_fr}") is not None)
+                
+                if not other_has_mask:
+                    if st.button(f"➡️ Przejdź do obrysowania drugiej projekcji ({other_meta['series_desc']})", type="primary", use_container_width=True):
+                        st.session_state["caa_active_series_name"] = other_name
+                        st.session_state["caa_target_view"] = "single_delineation"
+                        st.rerun()
+                else:
+                    if st.button("🌐 Oblicz objętość Simpsona 3D z obu obrysów", type="primary", use_container_width=True):
+                        st.session_state["caa_active_biplane_pair"] = matching_pair
+                        st.session_state["caa_target_view"] = "biplane_simpson"
+                        st.rerun()
+                        
+            if st.button("📋 Wróć do przeglądu projekcji (Gallery)", use_container_width=True):
+                st.session_state["caa_target_view"] = "gallery"
+                st.rerun()
+
+# ── 3. WIDOK: SIMPSON 3D (WYNIKI BIPLANE Z OBU OBRYSÓW) ───────────────────────
+def render_biplane_simpson_view(active_pid, series_map):
+    pair = st.session_state.get("caa_active_biplane_pair", None)
+    meta_store = st.session_state.get(f"caa_series_meta_{active_pid}", {})
+    
+    detected_pairs = find_biplane_pairs(series_map, meta_store)
+    
+    c_top1, c_top2 = st.columns([3, 1])
+    with c_top1:
+        st.markdown(f"### 🌐 Wyniki Simpsona 3D i Ekscentryczność z obu obrysów")
+    with c_top2:
+        if st.button("🔙 Wróć do galerii", use_container_width=True):
+            st.session_state["caa_target_view"] = "gallery"
+            st.rerun()
+            
+    # Pair selector if multiple exist
+    if detected_pairs:
+        pair_labels = [f"Segment: {p['aha_label']} | {p['p1_meta']['series_desc']} & {p['p2_meta']['series_desc']} (Kąt 3D: {p['angle_diff']:.1f}°)" for p in detected_pairs]
+        cur_p_idx = 0
+        if pair:
+            for i, p in enumerate(detected_pairs):
+                if p["p1_name"] == pair["p1_name"] and p["p2_name"] == pair["p2_name"]:
+                    cur_p_idx = i
+                    break
+        chosen_pair_idx = st.selectbox("Wybierz parę biplanarną do obliczeń:", range(len(detected_pairs)), format_func=lambda i: pair_labels[i], index=cur_p_idx)
+        pair = detected_pairs[chosen_pair_idx]
+        st.session_state["caa_active_biplane_pair"] = pair
+    elif pair is None:
+        st.warning("Brak wybranej pary biplanarnej. Wróć do galerii i oznacz dwie projekcje tym samym segmentem AHA.")
+        if st.button("👉 Przejdź do galerii", type="primary"):
+            st.session_state["caa_target_view"] = "gallery"
+            st.rerun()
+        return
+
+    p1_name, p1_dfp, p1_meta = pair["p1_name"], pair["p1_dfp"], pair["p1_meta"]
+    p2_name, p2_dfp, p2_meta = pair["p2_name"], pair["p2_dfp"], pair["p2_meta"]
+    angle_diff = pair["angle_diff"]
+    
+    p1_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(p1_dfp)}", 0)
+    p2_fr = st.session_state.get(f"caa_frame_{active_pid}_{os.path.basename(p2_dfp)}", 0)
+    
+    p1_case_key = f"{active_pid}_{os.path.basename(p1_dfp)}_{p1_fr}"
+    p2_case_key = f"{active_pid}_{os.path.basename(p2_dfp)}_{p2_fr}"
+    
+    prof1 = st.session_state.get(f"caa_prof_{p1_case_key}")
+    mask1 = st.session_state.get(f"caa_mask_{p1_case_key}")
+    lm1 = st.session_state.get(f"caa_lm_{p1_case_key}")
+    
+    prof2 = st.session_state.get(f"caa_prof_{p2_case_key}")
+    mask2 = st.session_state.get(f"caa_mask_{p2_case_key}")
+    lm2 = st.session_state.get(f"caa_lm_{p2_case_key}")
+    
+    # Check if both are delineated
+    is_ready = (prof1 is not None and prof2 is not None and mask1 is not None and mask2 is not None)
+    
+    if not is_ready:
+        st.warning(f"⚠️ Do wyliczenia objętości metodą Simpsona 3D wymagane jest obrysowanie **obu** projekcji z pary!")
+        c_alt1, c_alt2 = st.columns(2)
+        with c_alt1:
+            if prof1 is None:
+                st.error(f"❌ Projekcja 1 ({p1_meta['series_desc']}) nie została jeszcze obrysowana.")
+                if st.button(f"🎯 Obrysuj Projekcję 1", key="btn_go_p1_from_simp", type="primary", use_container_width=True):
+                    st.session_state["caa_active_series_name"] = p1_name
+                    st.session_state["caa_target_view"] = "single_delineation"
+                    st.rerun()
+            else:
+                st.success(f"✅ Projekcja 1 ({p1_meta['series_desc']}) jest obrysowana.")
+                
+        with c_alt2:
+            if prof2 is None:
+                st.error(f"❌ Projekcja 2 ({p2_meta['series_desc']}) nie została jeszcze obrysowana.")
+                if st.button(f"🎯 Obrysuj Projekcję 2", key="btn_go_p2_from_simp", type="primary", use_container_width=True):
+                    st.session_state["caa_active_series_name"] = p2_name
+                    st.session_state["caa_target_view"] = "single_delineation"
+                    st.rerun()
+            else:
+                st.success(f"✅ Projekcja 2 ({p2_meta['series_desc']}) jest obrysowana.")
+        return
+
+    # Calculate true biplane 3D volumetry from the two outlined profiles!
+    simp = compute_biplane_simpsons_volumetry(
+        thick1=prof1["thickness_mm"],
+        cum_dist1=prof1["cum_dist_mm"],
+        prox1=lm1.get("prox", prof1["prox_idx"]) if lm1 else prof1["prox_idx"],
+        dist1=lm1.get("dist", prof1["dist_idx"]) if lm1 else prof1["dist_idx"],
+        max1=lm1.get("max", prof1["max_idx"]) if lm1 else prof1["max_idx"],
+        thick2=prof2["thickness_mm"],
+        cum_dist2=prof2["cum_dist_mm"],
+        prox2=lm2.get("prox", prof2["prox_idx"]) if lm2 else prof2["prox_idx"],
+        dist2=lm2.get("dist", prof2["dist_idx"]) if lm2 else prof2["dist_idx"],
+        max2=lm2.get("max", prof2["max_idx"]) if lm2 else prof2["max_idx"],
+        n_slices=30
+    )
+    
+    if simp is None:
+        st.error("Wystąpił błąd podczas integracji numerycznej profili.")
+        return
+        
+    # Side-by-side presentation of both outlines
+    st.markdown("#### 🔬 Porównanie biplanarne obu obrysowanych projekcji (Side-by-Side):")
+    col_ov1, col_ov2 = st.columns(2)
+    
+    norm_512_p1 = get_norm_512(p1_meta["pixels"][p1_fr])
+    ov1 = render_aneurysm_overlay(norm_512_p1, mask1, prof1, lm1)
+    
+    norm_512_p2 = get_norm_512(p2_meta["pixels"][p2_fr])
+    ov2 = render_aneurysm_overlay(norm_512_p2, mask2, prof2, lm2)
+    
+    with col_ov1:
+        st.markdown(f"**Projekcja 1:** `{p1_meta['series_desc']}` (Klatka {p1_fr+1})")
+        st.caption(f"Kąty: **{p1_meta['primary_angle']:+.1f}° / {p1_meta['secondary_angle']:+.1f}°** | Skala: **{prof1['mm_per_pixel']:.4f} mm/px**")
+        safe_display_image(ov1)
+        st.markdown(f"📏 Dmax: **{simp['d1_max']:.1f} mm** | Ref: **{simp['ref1_mean']:.1f} mm** | Ratio: **{simp['dilation_ratio_1']}x** | L1: **{simp['L1']:.1f} mm**")
+        
+    with col_ov2:
+        st.markdown(f"**Projekcja 2:** `{p2_meta['series_desc']}` (Klatka {p2_fr+1})")
+        st.caption(f"Kąty: **{p2_meta['primary_angle']:+.1f}° / {p2_meta['secondary_angle']:+.1f}°** | Skala: **{prof2['mm_per_pixel']:.4f} mm/px**")
+        safe_display_image(ov2)
+        st.markdown(f"📏 Dmax: **{simp['d2_max']:.1f} mm** | Ref: **{simp['ref2_mean']:.1f} mm** | Ratio: **{simp['dilation_ratio_2']}x** | L2: **{simp['L2']:.1f} mm**")
+        
     st.markdown("---")
-    c_save1, c_save2 = st.columns([1, 2])
-    with c_save1:
-        if st.button("💾 Zapisz oznaczenie tętniaka", type="primary", use_container_width=True, key="btn_save_caa"):
-            vol_data = st.session_state.get("caa_calculated_volume", {})
-            
-            img_b64 = None
-            try:
-                default_dims = {
-                    "ref_prox": float(ref_prox),
-                    "ref_dist": float(ref_dist),
-                    "max_diam": float(max_diam),
-                    "mm_pp": active_mm_pp
-                }
-                ov = render_aneurysm_overlay(norm_512, active_mask, active_profile, active_landmarks, default_dims=default_dims)
-                pil_thumb = Image.fromarray(ov)
-                pil_thumb.thumbnail((450, 450))
-                buf = io.BytesIO()
-                pil_thumb.save(buf, format="JPEG", quality=80)
-                img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-            except Exception as e:
-                print(f"Error encoding thumbnail: {e}")
-                
-            record = {
-                "patient_id": active_pid,
-                "dicom_name": os.path.basename(selected_dfp),
-                "frame_idx": int(frame_slider),
-                "vessel": vessel,
-                "aha_segment": aha_segment,
-                "morphology": morphology,
-                "thrombus": thrombus,
-                "calcification": calcification,
-                "primary_angle": d_meta["primary_angle"],
-                "secondary_angle": d_meta["secondary_angle"],
-                "ref_prox_mm": float(ref_prox),
-                "ref_dist_mm": float(ref_dist),
-                "ref_interp_mm": float(interp_ref),
-                "max_aneurysm_diam_mm": float(max_diam),
-                "aneurysm_length_mm": float(aneurysm_len),
-                "expansion_ratio": float(expansion_ratio),
-                "pct_dilation": float(pct_dilation),
-                "classification": cls_text,
-                "has_concomitant_stenosis": bool(has_stenosis),
-                "mld_mm": float(mld_val) if mld_val is not None else None,
-                "pct_stenosis": float(pct_stenosis) if has_stenosis else 0.0,
-                "simpson_total_vol_mm3": vol_data.get("total_volume_mm3"),
-                "simpson_excess_vol_mm3": vol_data.get("excess_volume_mm3"),
-                "simpson_angle_diff_deg": vol_data.get("angle_diff_deg"),
-                "calib_source": "catheter" if calib_info else "dicom_metadata",
-                "mm_per_pixel": float(active_mm_pp),
-                "has_contour": bool(active_mask is not None),
-                "thumbnail_b64": img_b64,
-                "annotator": st.session_state.user.get("email", "syl.iwanczyk@gmail.com"),
-                "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
-            }
-            
-            try:
-                import firebase_admin
-                from firebase_admin import firestore
-                db = firestore.client()
-                
-                doc_id = f"{active_pid}_{vessel}_{aha_segment}_{int(time.time())}"
-                db.collection("aneurysm_results").document(doc_id).set(record)
-                
-                st.success(f"✅ Zapisano pomyślnie oznaczenie tętniaka dla pacjenta **{active_pid}** ({vessel} {aha_segment}) w kolekcji 'aneurysm_results'!")
-            except Exception as e:
-                st.error(f"Błąd zapisu do bazy: {e}")
+    
+    # 3D Simpson results banner
+    st.markdown(f"""
+    <div style='background-color: #042f2e; border: 1px solid #0f766e; border-left: 6px solid #14b8a6; padding: 16px 20px; border-radius: 8px; margin-bottom: 16px;'>
+        <div style='font-size: 15px; font-weight: 700; color: #2dd4bf;'>
+            📐 WYNIKI OBJĘTOŚCI 3D SIMPSONA (Z OBU RZECZYWISTYCH OBRYSÓW):
+        </div>
+        <div style='font-size: 28px; font-weight: 800; color: #5eead4; margin-top: 4px;'>
+            {simp['total_vol']:.1f} mm³ <span style='font-size: 16px; font-weight: normal; color: #ccfbf1;'>({simp['total_vol']:.1f} μl)</span>
+        </div>
+        <div style='font-size: 15px; color: #a7f3d0; margin-top: 6px;'>
+            • Nadmiarowa objętość rozstrzeni (Excess Volume): <b>{simp['excess_vol']:.1f} mm³</b> ({simp['excess_vol']:.1f} μl)<br/>
+            • Objętość zdrowego naczynia referencyjnego: <b>{simp['ref_vol']:.1f} mm³</b><br/>
+            • Różnica kątów w przestrzeni: <b>{angle_diff:.1f}°</b> {"✅ (Spełnia warunek ≥ 30°)" if angle_diff>=30 else "⚠️ (< 30°)"}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    c_m1, c_m2, c_m3, c_m4 = st.columns(4)
+    with c_m1:
+        st.metric("3D Eccentricity (Ekscentryczność):", f"{simp['eccentricity']}", help="e = sqrt(1 - (b/a)^2)")
+    with c_m2:
+        st.metric("Eliptyczność przekroju (a/b):", f"{simp['ellipticity']}")
+    with c_m3:
+        st.metric("Uśredniona długość (L):", f"{simp['L']:.1f} mm")
+    with c_m4:
+        st.metric("Morfologia:", simp["morphology"])
+        
+    st.markdown("---")
+    
+    # Clinical Documentation & Persistence Form
+    st.markdown("#### 📝 Dokumentacja kliniczna i zapis do bazy:")
+    c_doc1, c_doc2 = st.columns(2)
+    with c_doc1:
+        vessel = st.selectbox("Coronary Vessel:", ["LM (Left Main)", "LAD", "LCx", "RCA"], index=1 if "LAD" in pair["aha_label"] else (2 if "LCx" in pair["aha_label"] else 3), key="caa_save_vessel")
+        aha_segment = st.text_input("Segment AHA:", value=pair["aha_label"], key="caa_save_aha")
+    with c_doc2:
+        thrombus = st.selectbox("Obecność skrzepliny (Thrombus):", ["Brak (None)", "Obecna (Present)", "Podejrzenie (Suspected)"], key="caa_save_thrombus")
+        calcification = st.selectbox("Zwapnienia ściany (Calcification):", ["Brak (None)", "Łagodne (Mild)", "Masywne (Severe)"], key="caa_save_calc")
 
-    # ── 7. TABLE & SAVED CONTOUR PREVIEW ─────────────────────────────────
-    st.markdown("#### 📋 Zapisane tętniaki dla pacjenta:")
+    has_stenosis = st.checkbox("Współistniejące zwężenie w obrębie tętniaka", key="caa_save_stenosis")
+    mld_val = None
+    pct_stenosis = 0.0
+    if has_stenosis:
+        c_st1, c_st2 = st.columns(2)
+        with c_st1:
+            ref_avg = (simp['ref1_mean'] + simp['ref2_mean']) / 2.0
+            mld_val = st.number_input("Minimal Lumen Diameter (MLD) [mm]:", min_value=0.2, max_value=float(ref_avg), value=min(1.5, float(ref_avg)), step=0.1)
+        with c_st2:
+            pct_stenosis = round((1.0 - (mld_val / ref_avg)) * 100.0, 1)
+            st.metric("% Stenosis:", f"{pct_stenosis}%")
+
+    if st.button("💾 Zapisz pełne badanie biplanarne tętniaka do bazy danych", type="primary", use_container_width=True, key="btn_save_biplane_record"):
+        # Combine overlays into side-by-side thumbnail
+        img_b64 = None
+        try:
+            h1, w1 = ov1.shape[:2]
+            h2, w2 = ov2.shape[:2]
+            target_h = 350
+            w1_sc = int(w1 * (target_h / h1))
+            w2_sc = int(w2 * (target_h / h2))
+            ov1_sc = cv2.resize(ov1, (w1_sc, target_h))
+            ov2_sc = cv2.resize(ov2, (w2_sc, target_h))
+            combined_ov = np.hstack([ov1_sc, ov2_sc])
+            
+            pil_thumb = Image.fromarray(combined_ov)
+            buf = io.BytesIO()
+            pil_thumb.save(buf, format="JPEG", quality=80)
+            img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        except Exception as e:
+            print(f"Error encoding thumbnail: {e}")
+            
+        record = {
+            "patient_id": active_pid,
+            "vessel": vessel,
+            "aha_segment": aha_segment,
+            "morphology": simp["morphology"],
+            "thrombus": thrombus,
+            "calcification": calcification,
+            "simpson_total_vol_mm3": simp["total_vol"],
+            "simpson_excess_vol_mm3": simp["excess_vol"],
+            "simpson_ref_vol_mm3": simp["ref_vol"],
+            "simpson_angle_diff_deg": round(angle_diff, 1),
+            "eccentricity": simp["eccentricity"],
+            "ellipticity": simp["ellipticity"],
+            "d1_max_mm": simp["d1_max"],
+            "d2_max_mm": simp["d2_max"],
+            "ref1_mean_mm": simp["ref1_mean"],
+            "ref2_mean_mm": simp["ref2_mean"],
+            "dilation_ratio_1": simp["dilation_ratio_1"],
+            "dilation_ratio_2": simp["dilation_ratio_2"],
+            "length_mm": simp["L"],
+            "p1_series": p1_meta["series_desc"],
+            "p1_angles": f"{p1_meta['primary_angle']:+.1f}° / {p1_meta['secondary_angle']:+.1f}°",
+            "p2_series": p2_meta["series_desc"],
+            "p2_angles": f"{p2_meta['primary_angle']:+.1f}° / {p2_meta['secondary_angle']:+.1f}°",
+            "has_concomitant_stenosis": bool(has_stenosis),
+            "mld_mm": float(mld_val) if mld_val is not None else None,
+            "pct_stenosis": float(pct_stenosis) if has_stenosis else 0.0,
+            "thumbnail_b64": img_b64,
+            "annotator": st.session_state.user.get("email", "syl.iwanczyk@gmail.com") if "user" in st.session_state else "syl.iwanczyk@gmail.com",
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        try:
+            from firebase_admin import firestore
+            db = firestore.client()
+            doc_id = f"{active_pid}_{vessel}_{aha_segment.replace(' ', '_')}_{int(time.time())}"
+            db.collection("aneurysm_results").document(doc_id).set(record)
+            st.success(f"✅ Zapisano pomyślnie badanie tętniaka dla pacjenta **{active_pid}** ({aha_segment}) w kolekcji 'aneurysm_results'!")
+        except Exception as e:
+            st.error(f"Błąd zapisu do bazy danych: {e}")
+
+# ── 4. GŁÓWNY PUNKT WEJŚCIA MODUŁU TĘTNIAKÓW ─────────────────────────────────
+def render_coronary_aneurysm_workspace():
+    st.markdown("<h1 style='color: #38bdf8; font-family: Outfit, sans-serif;'>🩺 Coronary Artery Aneurysm (CAA) Workspace</h1>", unsafe_allow_html=True)
+    st.markdown("Platforma do analizy tętniaków wieńcowych: przegląd wszystkich projekcji, oznaczanie segmentów AHA, kalibracja cewnika auto-QCA, segmentacja AI oraz wyliczanie objętości 3D Simpsona i ekscentryczności z obu obrysów.")
+    
+    ensure_storage_dir()
+    
+    # Sidebar: patient case library
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📁 Baza pacjentów (Private Library)")
+    patients = get_aneurysm_patients()
+    
+    if "aneurysm_patient_id" not in st.session_state:
+        st.session_state.aneurysm_patient_id = patients[0] if patients else ""
+        
+    selected_pat = st.sidebar.selectbox(
+        "Wybierz badanie pacjenta:",
+        options=["-- Wybierz pacjenta --"] + patients if patients else ["(Brak badań)"],
+        index=(patients.index(st.session_state.aneurysm_patient_id) + 1) if (patients and st.session_state.aneurysm_patient_id in patients) else 0,
+        key="aneurysm_patient_select"
+    )
+    if selected_pat and selected_pat not in ["-- Wybierz pacjenta --", "(Brak badań)"]:
+        st.session_state.aneurysm_patient_id = selected_pat
+        
+    with st.sidebar.expander("📤 Wgraj nowe badanie (Archiwum ZIP)", expanded=(len(patients) == 0)):
+        st.markdown("Wgraj spakowane badanie koronarografii (ZIP). Wszystkie projekcje DICOM zostaną rozpakowane i zachowane na serwerze.")
+        uploaded_zip = st.file_uploader("Wybierz plik ZIP:", type=["zip"], key="aneurysm_zip_uploader")
+        custom_patient_name = st.text_input("Identyfikator pacjenta / ID badania:", value=os.path.splitext(uploaded_zip.name)[0] if uploaded_zip else "", key="aneurysm_custom_pid_input")
+        
+        if uploaded_zip and st.button("🚀 Wgraj i zapisz badanie", key="btn_save_aneurysm_zip", use_container_width=True):
+            pid_clean = sanitize_folder_name(custom_patient_name if custom_patient_name.strip() else uploaded_zip.name)
+            target_patient_dir = os.path.join(ANEURYSM_STORAGE_DIR, pid_clean)
+            os.makedirs(target_patient_dir, exist_ok=True)
+            
+            with st.spinner(f"Rozpakowywanie badania '{pid_clean}'..."):
+                try:
+                    with zipfile.ZipFile(uploaded_zip, 'r') as zf:
+                        valid_members = [m for m in zf.infolist() if not m.filename.startswith('__MACOSX') and not os.path.basename(m.filename).startswith('.')]
+                        for m in valid_members:
+                            zf.extract(m, target_patient_dir)
+                    st.success(f"✅ Pomyślnie wgrano badanie: **{pid_clean}**")
+                    st.session_state.aneurysm_patient_id = pid_clean
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Błąd rozpakowywania archiwum ZIP: {e}")
+                    
+    active_pid = st.session_state.get("aneurysm_patient_id")
+    if not active_pid or active_pid in ["-- Wybierz pacjenta --", "(Brak badań)"]:
+        st.info("👋 Witamy w module analizy tętniaków! Proszę wgrać badanie ZIP lub wybrać pacjenta z lewego panelu, aby rozpocząć analizę.")
+        return
+
+    patient_dir = os.path.join(ANEURYSM_STORAGE_DIR, active_pid)
+    if not os.path.exists(patient_dir):
+        st.warning(f"Katalog pacjenta '{active_pid}' nie został odnaleziony.")
+        return
+
+    # Find all DICOM files recursively
+    dicom_files = []
+    for root, _, files in os.walk(patient_dir):
+        for f in files:
+            if f.startswith('.'): continue
+            fp = os.path.join(root, f)
+            if f.lower().endswith('.dcm') or os.path.getsize(fp) > 132:
+                dicom_files.append(fp)
+
+    if not dicom_files:
+        st.warning(f"Nie odnaleziono poprawnych plików DICOM w folderze pacjenta '{active_pid}'.")
+        return
+
+    # Load all series headers
+    series_map = {}
+    for idx, dfp in enumerate(dicom_files):
+        d_meta = load_dicom_file(dfp)
+        if d_meta is not None:
+            lbl = f"Series #{len(series_map)+1}: {d_meta['series_desc']} (LAO/RAO: {d_meta['primary_angle']:+.1f}°, CRA/CAU: {d_meta['secondary_angle']:+.1f}°, {d_meta['total_frames']} frames)"
+            series_map[lbl] = (dfp, d_meta)
+
+    if not series_map:
+        st.error("Nie udało się odczytać nagłówków DICOM dla tego pacjenta.")
+        return
+
+    # Top-level view router
+    view_key = f"caa_view_mode_{active_pid}"
+    if "caa_target_view" in st.session_state:
+        st.session_state[view_key] = st.session_state.pop("caa_target_view")
+    if view_key not in st.session_state:
+        st.session_state[view_key] = "gallery"
+
+    # Persistent Top Navigation Bar
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🧭 Widok roboczy:")
+    view_choice = st.sidebar.radio(
+        "Wybierz widok:",
+        ["🗂️ Przegląd projekcji (Gallery)", "🎯 Delineacja projekcji", "🌐 Simpson 3D (Biplane)"],
+        index=0 if st.session_state[view_key]=="gallery" else (1 if st.session_state[view_key]=="single_delineation" else 2),
+        key=f"rad_view_{active_pid}"
+    )
+    if view_choice == "🗂️ Przegląd projekcji (Gallery)" and st.session_state[view_key] != "gallery":
+        st.session_state[view_key] = "gallery"
+        st.rerun()
+    elif view_choice == "🎯 Delineacja projekcji" and st.session_state[view_key] != "single_delineation":
+        st.session_state[view_key] = "single_delineation"
+        st.rerun()
+    elif view_choice == "🌐 Simpson 3D (Biplane)" and st.session_state[view_key] != "biplane_simpson":
+        st.session_state[view_key] = "biplane_simpson"
+        st.rerun()
+
+    # Route to active view
+    if st.session_state[view_key] == "gallery":
+        render_projections_gallery(active_pid, series_map)
+    elif st.session_state[view_key] == "single_delineation":
+        render_single_delineation_view(active_pid, series_map)
+    elif st.session_state[view_key] == "biplane_simpson":
+        render_biplane_simpson_view(active_pid, series_map)
+
+    # Saved records history
+    st.markdown("---")
+    st.markdown("#### 📋 Zapisane badania tętniaków dla pacjenta:")
     try:
         from firebase_admin import firestore
         db = firestore.client()
@@ -1248,9 +1615,9 @@ def render_coronary_aneurysm_workspace():
                     "Naczynie": dt.get("vessel"),
                     "Segment": dt.get("aha_segment"),
                     "Morfologia": dt.get("morphology"),
-                    "Max Diam [mm]": dt.get("max_aneurysm_diam_mm"),
-                    "Ref [mm]": dt.get("ref_interp_mm"),
-                    "Ratio (Ekscentryczność)": f"{dt.get('expansion_ratio')}x",
+                    "Max D1 [mm]": dt.get("d1_max_mm", dt.get("max_aneurysm_diam_mm")),
+                    "Max D2 [mm]": dt.get("d2_max_mm", "—"),
+                    "Ekscentryczność": dt.get("eccentricity", "—"),
                     "Objętość 3D Simpsona": vol_str,
                     "Data": dt.get("created_at")
                 })
@@ -1263,10 +1630,10 @@ def render_coronary_aneurysm_workspace():
                     st.markdown(f"**Pacjent:** `{saved_dt.get('patient_id')}` | **Naczynie:** `{saved_dt.get('vessel')}` `{saved_dt.get('aha_segment')}` | **Data:** `{saved_dt.get('created_at')}`")
                     if saved_dt.get("thumbnail_b64"):
                         img_bytes = base64.b64decode(saved_dt["thumbnail_b64"])
-                        st.image(img_bytes, caption=f"Zapisany obrys tętniaka: {saved_dt.get('vessel')} {saved_dt.get('aha_segment')} (Dmax={saved_dt.get('max_aneurysm_diam_mm')} mm, Ratio={saved_dt.get('expansion_ratio')}x)", use_column_width=True)
+                        st.image(img_bytes, caption=f"Zapisany obrys tętniaka: {saved_dt.get('vessel')} {saved_dt.get('aha_segment')} (Simpson: {saved_dt.get('simpson_total_vol_mm3')} mm³, Ekscentryczność: {saved_dt.get('eccentricity')})", use_column_width=True)
                     else:
                         st.info("Dla tego rekordu brak zapisanego zrzutu obrysu.")
         else:
-            st.info("Brak zapisanych oznaczeń dla tego pacjenta. Wypełnij parametry powyżej i kliknij 'Zapisz'.")
+            st.info("Brak zapisanych oznaczeń dla tego pacjenta. Wybierz i obrysuj projekcje powyżej.")
     except Exception as e:
         print(f"Error fetching saved aneurysms: {e}")
