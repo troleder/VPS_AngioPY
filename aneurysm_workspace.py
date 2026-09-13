@@ -511,7 +511,12 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", orientation="
     hover_text = []
     for i in range(n_s):
         row_txt = []
-        seg_pos_name = "Proksymalny (Wlot)" if i == 0 else ("Dystalny (Wylot)" if i == n_s - 1 else f"{s[i]:.1f} mm od wlotu")
+        if i == 0:
+            seg_pos_name = "Ostium / Początek tętniaka (Wlot)" if simp.get("is_ostial") else "Proksymalny (Ref Prox / Wlot)"
+        elif i == n_s - 1:
+            seg_pos_name = "Dystalny (Ref Dist / Wylot)"
+        else:
+            seg_pos_name = f"{s[i]:.1f} mm od wlotu"
         r_val = dil_ratio[i]
         if r_val < 1.2:
             zone_badge = "🟢 Zdrowe naczynie (< 1.2x Ref)"
@@ -623,7 +628,10 @@ def generate_aneurysm_3d_figure(simp, pair, color_mode="diameter", orientation="
                 name=label
             ))
 
-        add_caliper_ring(0, "#22c55e", f"Ref Prox (Góra) ({mean_D[0]:.1f} mm)")
+        if simp.get("is_ostial"):
+            add_caliper_ring(0, "#f59e0b", f"Ostium / Początek tętniaka ({mean_D[0]:.1f} mm)")
+        else:
+            add_caliper_ring(0, "#22c55e", f"Ref Prox (Góra) ({mean_D[0]:.1f} mm)")
         add_caliper_ring(n_s - 1, "#22c55e", f"Ref Dist (Dół) ({mean_D[-1]:.1f} mm)")
         m_idx = simp.get("max_idx_slice", int(np.argmax(mean_D)))
         add_caliper_ring(m_idx, "#ef4444", f"Dmax ({mean_D[m_idx]:.1f} mm)")
